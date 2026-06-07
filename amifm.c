@@ -7,7 +7,8 @@
  * left double-click does the type-aware action (enter drawer / extract archive
  * / view file). The RIGHT button opens the menu strip (incl. Iconify).
  *
- * Build:  m68k-amigaos-gcc -O2 -Wall -o amifm amifm.c
+ * Build:  m68k-amigaos-gcc -Os -noixemul -Wall -Wno-pointer-sign -s -o amifm amifm.c
+ *         (or just `make`)
  */
 #include <exec/types.h>
 #include <exec/memory.h>
@@ -1145,7 +1146,8 @@ static void iconify(void)
     RemoveAppIcon(ai);
     if (freedob) FreeDiskObject(dob);
     DeleteMsgPort(port);
-    openMainWin();
+    if (!openMainWin())            /* low memory: leave win NULL, main loop exits cleanly */
+        info("amifm: could not reopen its window.");
 }
 
 int main(void)
@@ -1184,6 +1186,7 @@ int main(void)
 
     while (!done) {
         struct IntuiMessage *imsg;
+        if (!win) break;            /* window couldn't be reopened after iconify */
         Wait(1L << win->UserPort->mp_SigBit);
         while ((imsg = (struct IntuiMessage *)GetMsg(win->UserPort))) {
             ULONG cls = imsg->Class, code = imsg->Code;
@@ -1310,8 +1313,7 @@ int main(void)
         }
     }
 
-    if (g_menu) ClearMenuStrip(win);
-    CloseWindow(win);
+    if (win) { if (g_menu) ClearMenuStrip(win); CloseWindow(win); }
 cl_font:
     if (g_menu) FreeMenus(g_menu);
     CloseFont(font);

@@ -12,8 +12,13 @@
 # corrupts the Amiga hunk executable (illegal-instruction crash). The linker's
 # own -s flag (in CFLAGS) strips safely.
 
-CC      ?= m68k-amigaos-gcc
-CFLAGS  ?= -Os -Wall -s
+# plain '=' (not '?=') - make predefines CC as the host 'cc', so '?=' would
+# never assign and `make` would wrongly use the host compiler. Override with
+# `make CC=...` if your cross-gcc has a different name.
+CC      = m68k-amigaos-gcc
+# -noixemul: self-contained binary (no ixemul.library dependency), ~half size.
+# -Wno-pointer-sign: silence the harmless STRPTR vs char* string-literal warnings.
+CFLAGS  ?= -Os -noixemul -fomit-frame-pointer -Wall -Wno-pointer-sign -s
 
 # WinUAE "Work:" mount used by the headless test harness (deploy target).
 WORK    ?= /mnt/c/Amiga/workspace
