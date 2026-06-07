@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Generate amifm.info  - a 4-colour Amiga icon (dual-pane file-manager look).
+# Generate AmiFM.info  - a 4-colour Amiga icon (dual-pane file-manager look).
 # Pens (standard Workbench palette): 0=grey(bg) 1=black 2=white 3=blue
 import struct
 
@@ -97,11 +97,11 @@ out += struct.pack('>B', 0)             # PlaneOnOff
 out += struct.pack('>I', 0)             # NextImage
 out += planes                           # bitplane data
 
-with open('/mnt/c/Amiga/workspace/amifm.info','wb') as f:
+with open('/mnt/c/Amiga/workspace/AmiFM.info','wb') as f:
     f.write(out)
 # dump the pixel grid for a host-side preview
 with open('/mnt/c/Amiga/workspace/icon_grid.txt','w') as f:
     f.write("%d %d\n" % (W,H))
     for y in range(H):
         f.write(" ".join(str(px[y][x]) for x in range(W)) + "\n")
-print("wrote amifm.info", len(out), "bytes; image", W, "x", H, "x", D)
+print("wrote AmiFM.info", len(out), "bytes; image", W, "x", H, "x", D)

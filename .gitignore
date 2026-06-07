@@ -1,5 +1,5 @@
 # Built Amiga binary (regenerate with `make`)
-/amifm
+/AmiFM
 
 # Icon-generator preview artifacts
 tools/*_grid.txt

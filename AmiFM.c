@@ -1,5 +1,5 @@
 /*
- * amifm - dual-pane file manager for AmigaOS 3.x  [custom-lister build]
+ * AmiFM - dual-pane file manager for AmigaOS 3.x  [custom-lister build]
  *
  * Custom-drawn listers: rows are rendered by hand, so columns are pinned to
  * exact pixels (Name | Size | Date) with headers, right-aligned size, and no
@@ -7,7 +7,7 @@
  * left double-click does the type-aware action (enter drawer / extract archive
  * / view file). The RIGHT button opens the menu strip (incl. Iconify).
  *
- * Build:  m68k-amigaos-gcc -Os -noixemul -Wall -Wno-pointer-sign -s -o amifm amifm.c
+ * Build:  m68k-amigaos-gcc -Os -noixemul -Wall -Wno-pointer-sign -s -o AmiFM AmiFM.c
  *         (or just `make`)
  */
 #include <exec/types.h>
@@ -64,7 +64,7 @@ static WORD g_btnX[NBTN], g_btnYr[NBTN], g_btnWr[NBTN], g_btnH, g_btnTop;   /* c
 
 static struct Menu *g_menu = NULL;     /* right-button menu strip */
 
-/* fallback AppIcon image (used only if PROGDIR:amifm.info can't be loaded) */
+/* fallback AppIcon image (used only if PROGDIR:AmiFM.info can't be loaded) */
 static UWORD g_appIconBits[16] = {
     0xFFFF, 0x8001, 0xFFFF, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001,
     0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0xFFFF
@@ -521,7 +521,7 @@ static BOOL confirm(const char *msg, const char *name)
 {
     struct EasyStruct es;
     es.es_StructSize = sizeof(es); es.es_Flags = 0;
-    es.es_Title = (STRPTR)"amifm"; es.es_TextFormat = (STRPTR)"%s\n%s";
+    es.es_Title = (STRPTR)"AmiFM"; es.es_TextFormat = (STRPTR)"%s\n%s";
     es.es_GadgetFormat = (STRPTR)"Yes|No";
     return EasyRequest(win, &es, NULL, (ULONG)msg, (ULONG)name) == 1;
 }
@@ -530,7 +530,7 @@ static void info(const char *msg)
 {
     struct EasyStruct es;
     es.es_StructSize = sizeof(es); es.es_Flags = 0;
-    es.es_Title = (STRPTR)"amifm"; es.es_TextFormat = (STRPTR)"%s";
+    es.es_Title = (STRPTR)"AmiFM"; es.es_TextFormat = (STRPTR)"%s";
     es.es_GadgetFormat = (STRPTR)"OK";
     EasyRequest(win, &es, NULL, (ULONG)msg);
 }
@@ -676,7 +676,7 @@ static int overwriteAsk(const char *name)
 {
     struct EasyStruct es;
     es.es_StructSize = sizeof es; es.es_Flags = 0;
-    es.es_Title = (STRPTR)"amifm";
+    es.es_Title = (STRPTR)"AmiFM";
     es.es_TextFormat = (STRPTR)"Overwrite existing file?\n%s";
     es.es_GadgetFormat = (STRPTR)"Yes|All|Skip|Cancel";
     return EasyRequest(win, &es, NULL, (ULONG)name);
@@ -1066,7 +1066,7 @@ static void opFind(void)
 /* ---- right-button menu, window open, iconify --------------------------- */
 
 static struct NewMenu g_newmenu[] = {
-    { NM_TITLE, (STRPTR)"amifm",       0,           0, 0, (APTR)0 },
+    { NM_TITLE, (STRPTR)"AmiFM",       0,           0, 0, (APTR)0 },
     { NM_ITEM,  (STRPTR)"Reload",      (STRPTR)"R", 0, 0, (APTR)0 },
     { NM_ITEM,  (STRPTR)"Iconify",     (STRPTR)"I", 0, 0, (APTR)0 },
     { NM_ITEM,  (STRPTR)NM_BARLABEL,   0,           0, 0, (APTR)0 },
@@ -1124,30 +1124,30 @@ static BOOL openMainWin(void)
     return TRUE;
 }
 
-/* make sure PROGDIR:amifm.info exists so amifm has a Workbench icon (and the
+/* make sure PROGDIR:AmiFM.info exists so AmiFM has a Workbench icon (and the
  * iconify AppIcon uses it); create it from the built-in image if missing. */
 static void ensureProgramIcon(void)
 {
     struct DiskObject *dob;
     if (!IconBase) return;
-    if ((dob = GetDiskObject((STRPTR)"PROGDIR:amifm"))) { FreeDiskObject(dob); return; }
+    if ((dob = GetDiskObject((STRPTR)"PROGDIR:AmiFM"))) { FreeDiskObject(dob); return; }
     g_appIconDO.do_Magic = WB_DISKMAGIC; g_appIconDO.do_Version = WB_DISKVERSION;
     g_appIconDO.do_Gadget.Width = 16; g_appIconDO.do_Gadget.Height = 16;
     g_appIconDO.do_Gadget.Flags = GFLG_GADGIMAGE; g_appIconDO.do_Gadget.GadgetType = GTYP_BOOLGADGET;
     g_appIconDO.do_Gadget.GadgetRender = (APTR)&g_appIconImg; g_appIconDO.do_Type = WBTOOL;
     g_appIconDO.do_CurrentX = NO_ICON_POSITION; g_appIconDO.do_CurrentY = NO_ICON_POSITION;
     g_appIconDO.do_StackSize = 4096;
-    PutDiskObject((STRPTR)"PROGDIR:amifm", &g_appIconDO);
+    PutDiskObject((STRPTR)"PROGDIR:AmiFM", &g_appIconDO);
 }
 
-/* iconify: close the window, drop amifm's icon on the Workbench as an AppIcon,
- * wait for a double-click, then reopen. Uses PROGDIR:amifm.info if present. */
+/* iconify: close the window, drop AmiFM's icon on the Workbench as an AppIcon,
+ * wait for a double-click, then reopen. Uses PROGDIR:AmiFM.info if present. */
 static void iconify(void)
 {
     struct AppIcon *ai; struct MsgPort *port; struct DiskObject *dob; BOOL freedob = FALSE, wake = FALSE;
     if (!WorkbenchBase) { info("Iconify needs workbench.library v37+."); return; }
     if (!(port = CreateMsgPort())) return;
-    dob = IconBase ? GetDiskObject((STRPTR)"PROGDIR:amifm") : NULL;
+    dob = IconBase ? GetDiskObject((STRPTR)"PROGDIR:AmiFM") : NULL;
     if (dob) freedob = TRUE;
     else {                                        /* fall back to the built-in image */
         g_appIconDO.do_Magic = WB_DISKMAGIC; g_appIconDO.do_Version = WB_DISKVERSION;
@@ -1158,7 +1158,7 @@ static void iconify(void)
         dob = &g_appIconDO;
     }
     dob->do_CurrentX = NO_ICON_POSITION; dob->do_CurrentY = NO_ICON_POSITION;
-    ai = AddAppIconA(0L, 0L, (STRPTR)"amifm", port, (BPTR)0, dob, NULL);
+    ai = AddAppIconA(0L, 0L, (STRPTR)"AmiFM", port, (BPTR)0, dob, NULL);
     if (!ai) { if (freedob) FreeDiskObject(dob); DeleteMsgPort(port); info("Iconify: AddAppIcon failed."); return; }
     if (g_menu) ClearMenuStrip(win);
     CloseWindow(win); win = NULL;
@@ -1171,7 +1171,7 @@ static void iconify(void)
     if (freedob) FreeDiskObject(dob);
     DeleteMsgPort(port);
     if (!openMainWin())            /* low memory: leave win NULL, main loop exits cleanly */
-        info("amifm: could not reopen its window.");
+        info("AmiFM: could not reopen its window.");
 }
 
 int main(void)
@@ -1182,7 +1182,7 @@ int main(void)
     IntuitionBase = (struct IntuitionBase *)OpenLibrary("intuition.library", 39);
     GfxBase       = (struct GfxBase *)OpenLibrary("graphics.library", 39);
     GadToolsBase  = OpenLibrary("gadtools.library", 39);
-    if (!IntuitionBase || !GfxBase || !GadToolsBase) { PutStr((STRPTR)"amifm: need v39 libs\n"); goto cl_libs; }
+    if (!IntuitionBase || !GfxBase || !GadToolsBase) { PutStr((STRPTR)"AmiFM: need v39 libs\n"); goto cl_libs; }
     WorkbenchBase = OpenLibrary("workbench.library", 37);   /* optional: iconify */
     IconBase      = OpenLibrary("icon.library", 37);
 
@@ -1204,9 +1204,9 @@ int main(void)
     panes[0].lastrow = panes[1].lastrow = -1;
     scanPane(&panes[0]); scanPane(&panes[1]);
 
-    ensureProgramIcon();                          /* create PROGDIR:amifm.info if missing */
+    ensureProgramIcon();                          /* create PROGDIR:AmiFM.info if missing */
     buildMenu();                                  /* right-button menu */
-    if (!openMainWin()) { PutStr((STRPTR)"amifm: no window\n"); goto cl_font; }
+    if (!openMainWin()) { PutStr((STRPTR)"AmiFM: no window\n"); goto cl_font; }
 
     while (!done) {
         struct IntuiMessage *imsg;
@@ -1226,7 +1226,7 @@ int main(void)
                 while (mnum != MENUNULL) {
                     struct MenuItem *mi = ItemAddress(g_menu, mnum);
                     UWORD mn = MENUNUM(mnum), in = ITEMNUM(mnum);
-                    if (mn == 0) {                       /* amifm */
+                    if (mn == 0) {                       /* AmiFM */
                         if (in == 0) opReload(); else if (in == 1) iconify(); else if (in == 3) done = TRUE;
                     } else if (mn == 1) {                /* Selection */
                         switch (in) { case 0: opView(); break; case 1: opEdit(); break;

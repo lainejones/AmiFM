@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# amifm GlowIcon: glossy dual-pane window. Normal image = no glow; selected image
+# AmiFM GlowIcon: glossy dual-pane window. Normal image = no glow; selected image
 # = yellow-gold glow halo (authentic GlowIcons behaviour). Emits a real OS3.5
 # colour-icon .info (classic DiskObject + planar fallback + FORM ICON with two
 # RLE-compressed IMAG chunks). Also dumps grids for host preview.
@@ -173,5 +173,5 @@ DO+=struct.pack('>BB',3,0)+struct.pack('>II',0,0)+struct.pack('>II',NO_POS,NO_PO
 DO+=struct.pack('>III',0,0,4096)
 
 blob=DO+img+formchunk
-open('/mnt/c/Amiga/workspace/amifm.info','wb').write(blob)
+open('/mnt/c/Amiga/workspace/AmiFM.info','wb').write(blob)
 print("colour-icon .info %d bytes (img1 %dB, img2 %dB)"%(len(blob),len(imag1),len(imag2)))

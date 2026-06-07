@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# Decode amifm.info's colour images back out, to verify the encoder round-trips.
+# Decode AmiFM.info's colour images back out, to verify the encoder round-trips.
 import struct
-b = open('/mnt/c/Amiga/workspace/amifm.info','rb').read()
+b = open('/mnt/c/Amiga/workspace/AmiFM.info','rb').read()
 s = b.find(b'FORM'); assert b[s+8:s+12]==b'ICON', "no FORM ICON"
 W=H=None; imags=[]
 p=s+12
