@@ -671,10 +671,23 @@ static void opDelete(void)
     if (fail) { fmt(q, sizeof q, "%d of %d failed (drawer not empty?).", fail, n); info(q); }
 }
 
+/* overwrite prompt: 1=Yes, 2=All (don't ask again), 3=Skip, 0=Cancel */
+static int overwriteAsk(const char *name)
+{
+    struct EasyStruct es;
+    es.es_StructSize = sizeof es; es.es_Flags = 0;
+    es.es_Title = (STRPTR)"amifm";
+    es.es_TextFormat = (STRPTR)"Overwrite existing file?\n%s";
+    es.es_GadgetFormat = (STRPTR)"Yes|All|Skip|Cancel";
+    return EasyRequest(win, &es, NULL, (ULONG)name);
+}
+
 static void opCopy(void)   /* active pane -> other pane */
 {
     struct Pane *s = active(), *d = other(); struct WItem *w = g_work;
-    char src[384], dst[384], m[80]; int n = gatherWork(s, w, MAXWORK), i, fail = 0, skipdir = 0;
+    char src[384], dst[384], m[80]; int n = gatherWork(s, w, MAXWORK), i;
+    int copied = 0, fail = 0, skipdir = 0, skipover = 0;
+    BOOL yesall = FALSE, cancelled = FALSE;
     if (!n) { info("Select or tag items first."); return; }
     if (ci_cmp(s->path, d->path) == 0) {       /* same drawer: copyFile would truncate the file onto itself */
         info("Both panes show the same drawer.\nNothing to copy."); return;
@@ -683,11 +696,22 @@ static void opCopy(void)   /* active pane -> other pane */
         if (w[i].isdir) { skipdir++; continue; }     /* recursive drawer copy still TODO */
         strcpy(src, s->path); AddPart((STRPTR)src, (STRPTR)w[i].name, sizeof src);
         strcpy(dst, d->path); AddPart((STRPTR)dst, (STRPTR)w[i].name, sizeof dst);
-        if (!copyFile(src, dst)) fail++;
+        if (!yesall) {                               /* confirm before clobbering an existing file */
+            BPTR ex = Lock((STRPTR)dst, ACCESS_READ);
+            if (ex) {
+                int r; UnLock(ex);
+                r = overwriteAsk(w[i].name);
+                if (r == 0) { cancelled = TRUE; break; }   /* Cancel: stop the whole copy */
+                if (r == 3) { skipover++; continue; }      /* Skip this one */
+                if (r == 2) yesall = TRUE;                 /* All: stop asking */
+            }
+        }
+        if (copyFile(src, dst)) copied++; else fail++;
     }
     clearTags(s); refresh1(d); drawPane(s);
-    if (fail || skipdir) { fmt(m, sizeof m, "%d copied, %d failed, %d drawer(s) skipped.",
-                                    n - fail - skipdir, fail, skipdir); info(m); }
+    if (cancelled || fail || skipdir || skipover)
+        { fmt(m, sizeof m, "%d copied, %d failed, %d skipped, %d drawer(s).",
+                copied, fail, skipover, skipdir); info(m); }
 }
 
 static void opMove(void)   /* active pane -> other pane (same-volume rename) */
