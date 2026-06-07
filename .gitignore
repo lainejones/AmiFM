@@ -1,0 +1,12 @@
+# Built Amiga binary (regenerate with `make`)
+/amifm
+
+# Icon-generator preview artifacts
+tools/*_grid.txt
+*_grid.txt
+
+# Editor / OS cruft
+*.swp
+*~
+Thumbs.db
+.DS_Store

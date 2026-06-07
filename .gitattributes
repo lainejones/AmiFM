@@ -1,0 +1,5 @@
+# Keep source as LF (Amiga/Unix); never CRLF-mangle binary assets.
+* text=auto eol=lf
+*.info binary
+*.png  binary
+*.lha  binary
