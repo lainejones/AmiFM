@@ -174,10 +174,62 @@ static void freeEntries(struct Pane *p)
     p->count = 0;
 }
 
+/* make room for 'need' entries: grow by doubling (AllocVec + CopyMem + FreeVec).
+ * New slots are zeroed (MEMF_CLEAR). FALSE = out of memory, array unchanged. */
+static BOOL growEntries(struct Pane *p, int *cap, int need)
+{
+    struct Entry *ne; int nc = *cap ? *cap : 64;
+    if (need <= *cap) return TRUE;
+    while (nc < need) nc *= 2;
+    ne = AllocVec(sizeof(struct Entry) * nc, MEMF_CLEAR);
+    if (!ne) return FALSE;
+    if (p->entries) {
+        CopyMem(p->entries, ne, sizeof(struct Entry) * p->count);
+        FreeVec(p->entries);
+    }
+    p->entries = ne; *cap = nc;
+    return TRUE;
+}
+
+/* append one row (type > 0 = drawer, ds NULL = no date); FALSE = out of memory */
+static BOOL addEntry(struct Pane *p, int *cap, const char *name, LONG type, LONG size,
+                     const struct DateStamp *ds)
+{
+    struct Entry *e;
+    if (!growEntries(p, cap, p->count + 1)) return FALSE;
+    e = &p->entries[p->count++];
+    strncpy(e->name, name, sizeof(e->name) - 1);
+    e->isdir = (type > 0);
+    e->size  = size;
+    if (e->isdir) strcpy(e->sizestr, "<DIR>");
+    else fmt(e->sizestr, sizeof(e->sizestr), "%ld", (long)e->size);
+    if (ds) {
+        struct DateTime dt; char db[20]; db[0] = '\0';
+        dt.dat_Stamp = *ds; dt.dat_Format = FORMAT_DOS; dt.dat_Flags = 0;
+        dt.dat_StrDay = NULL; dt.dat_StrDate = (STRPTR)db; dt.dat_StrTime = NULL;
+        DateToStr(&dt);
+        strncpy(e->datestr, db, sizeof(e->datestr) - 1);
+        e->dkey = ds->ds_Days * 1440L + ds->ds_Minute;
+    }
+    return TRUE;
+}
+
+#define EXALL_BUFSZ 4096
+
+/* stop an ExAll scan early: ExAllEnd (dos V39+), else drain the remaining calls */
+static void exAllStop(BPTR lock, struct ExAllData *buf, struct ExAllControl *eac)
+{
+    if (((struct Library *)DOSBase)->lib_Version >= 39)
+        ExAllEnd(lock, buf, EXALL_BUFSZ, ED_DATE, eac);
+    else
+        while (ExAll(lock, buf, EXALL_BUFSZ, ED_DATE, eac)) ;
+}
+
+/* Read a drawer in ONE pass: ExAll (name/type/size/date) into a growable array,
+ * falling back to Examine/ExNext if the handler doesn't know ExAll. */
 static void scanPane(struct Pane *p)
 {
-    BPTR lock; struct FileInfoBlock *fib; int n = 0;
-    int extra = 2;        /* always show "." (reload) and ".." (up), Unix-style */
+    BPTR lock; int cap = 0; BOOL useExNext = TRUE, oom = FALSE;
     struct Process *pr = (struct Process *)FindTask(NULL);
     APTR oldwp = pr->pr_WindowPtr;
     pr->pr_WindowPtr = (APTR)-1L;          /* suppress "insert volume" requesters (e.g. empty DF0:) */
@@ -185,48 +237,44 @@ static void scanPane(struct Pane *p)
 
     lock = Lock((STRPTR)p->path, ACCESS_READ);
     if (!lock) { pr->pr_WindowPtr = oldwp; return; }
-    fib = AllocDosObject(DOS_FIB, NULL);
-    if (fib && Examine(lock, fib)) while (ExNext(lock, fib)) n++;
+    {
+        struct ExAllControl *eac = AllocDosObject(DOS_EXALLCONTROL, NULL);
+        struct ExAllData *buf = AllocVec(EXALL_BUFSZ, MEMF_ANY);
+        if (eac && buf) {
+            BOOL more;
+            useExNext = FALSE;
+            eac->eac_LastKey = 0; eac->eac_MatchString = NULL; eac->eac_MatchFunc = NULL;
+            do {
+                struct ExAllData *ed;
+                more = ExAll(lock, buf, EXALL_BUFSZ, ED_DATE, eac);
+                if (!more && IoErr() == ERROR_ACTION_NOT_KNOWN && p->count == 0) {
+                    useExNext = TRUE; break;          /* handler has no ExAll: use ExNext */
+                }
+                for (ed = (eac->eac_Entries > 0) ? buf : NULL; ed; ed = ed->ed_Next) {
+                    struct DateStamp ds;
+                    ds.ds_Days = ed->ed_Days; ds.ds_Minute = ed->ed_Mins; ds.ds_Tick = ed->ed_Ticks;
+                    if (!addEntry(p, &cap, (char *)ed->ed_Name, ed->ed_Type, (LONG)ed->ed_Size, &ds))
+                        { oom = TRUE; break; }
+                }
+                if (oom && more) { exAllStop(lock, buf, eac); more = FALSE; }
+            } while (more);
+        }
+        if (buf) FreeVec(buf);
+        if (eac) FreeDosObject(DOS_EXALLCONTROL, eac);
+    }
+    if (useExNext && !oom) {
+        struct FileInfoBlock *fib = AllocDosObject(DOS_FIB, NULL);
+        if (fib && Examine(lock, fib))
+            while (ExNext(lock, fib))
+                if (!addEntry(p, &cap, (char *)fib->fib_FileName, fib->fib_DirEntryType,
+                              fib->fib_Size, &fib->fib_Date)) break;
+        if (fib) FreeDosObject(DOS_FIB, fib);
+    }
     UnLock(lock);
-    if (n + extra <= 0 || !fib) { if (fib) FreeDosObject(DOS_FIB, fib); pr->pr_WindowPtr = oldwp; return; }
-
-    p->entries = AllocVec(sizeof(struct Entry) * (n + extra), MEMF_CLEAR);
-    if (!p->entries) { FreeDosObject(DOS_FIB, fib); pr->pr_WindowPtr = oldwp; return; }
-
-    lock = Lock((STRPTR)p->path, ACCESS_READ);
-    if (lock && Examine(lock, fib)) {
-        int i = 0;
-        while (ExNext(lock, fib) && i < n) {
-            struct Entry *e = &p->entries[i];
-            struct DateTime dt; char db[20]; db[0] = '\0';
-            strncpy(e->name, (char *)fib->fib_FileName, sizeof(e->name) - 1);
-            e->isdir = (fib->fib_DirEntryType > 0);
-            e->size  = fib->fib_Size;
-            if (e->isdir) strcpy(e->sizestr, "<DIR>");
-            else fmt(e->sizestr, sizeof(e->sizestr), "%ld", (long)e->size);
-            dt.dat_Stamp = fib->fib_Date; dt.dat_Format = FORMAT_DOS; dt.dat_Flags = 0;
-            dt.dat_StrDay = NULL; dt.dat_StrDate = (STRPTR)db; dt.dat_StrTime = NULL;
-            DateToStr(&dt);
-            strncpy(e->datestr, db, sizeof(e->datestr) - 1);
-            e->dkey = fib->fib_Date.ds_Days * 1440L + fib->fib_Date.ds_Minute;
-            i++;
-        }
-        p->count = i;
-    }
-    if (lock) UnLock(lock);
-    FreeDosObject(DOS_FIB, fib);
     pr->pr_WindowPtr = oldwp;
-    {   /* prepend the "." (reload) and ".." (parent) nav entries */
-        static const char *nav[2] = { ".", ".." };
-        int k;
-        for (k = 0; k < extra && k < 2; k++) {
-            struct Entry *e = &p->entries[p->count];
-            strcpy(e->name, nav[k]);
-            e->isdir = TRUE; e->size = 0; e->dkey = 0; e->tagged = FALSE;
-            strcpy(e->sizestr, "<DIR>"); e->datestr[0] = '\0';
-            p->count++;
-        }
-    }
+    /* the "." (reload) and ".." (parent) nav entries, Unix-style (sort pins them on top) */
+    addEntry(p, &cap, ".", 1, 0, NULL);
+    addEntry(p, &cap, "..", 1, 0, NULL);
     sortPane(p);
 }
 
@@ -540,16 +588,37 @@ static void info(const char *msg)
 static struct Pane *active(void) { return &panes[g_active]; }
 static struct Pane *other(void)  { return &panes[g_active ^ 1]; }
 
+/* Copy one file. On any failure (read/write error, Ctrl-C) the partial
+ * destination is deleted; on success the source's comment, date and
+ * protection bits are carried over. */
 static BOOL copyFile(const char *src, const char *dst)
 {
-    static char buf[8192];
-    BPTR in, out; LONG n; BOOL ok = TRUE;
-    if (!(in = Open((STRPTR)src, MODE_OLDFILE))) return FALSE;
-    if (!(out = Open((STRPTR)dst, MODE_NEWFILE))) { Close(in); return FALSE; }
-    while ((n = Read(in, buf, sizeof(buf))) > 0)
-        if (Write(out, buf, n) != n) { ok = FALSE; break; }
-    if (n < 0) ok = FALSE;
-    Close(in); Close(out);
+    struct FileInfoBlock *fib; BPTR lk, in, out; char *buf;
+    LONG bufsz = 32768, n = 0; BOOL ok = TRUE, haveInfo = FALSE;
+    while (!(buf = AllocVec(bufsz, MEMF_ANY)) && bufsz > 1024) bufsz >>= 1;
+    if (!buf) return FALSE;
+    if ((fib = AllocDosObject(DOS_FIB, NULL))) {       /* source metadata to clone */
+        if ((lk = Lock((STRPTR)src, ACCESS_READ))) { haveInfo = Examine(lk, fib); UnLock(lk); }
+    }
+    if (!(in = Open((STRPTR)src, MODE_OLDFILE))) ok = FALSE;
+    else if (!(out = Open((STRPTR)dst, MODE_NEWFILE))) { Close(in); ok = FALSE; }
+    else {
+        while ((n = Read(in, buf, bufsz)) > 0) {
+            if (Write(out, buf, n) != n) { ok = FALSE; break; }
+            if (CheckSignal(SIGBREAKF_CTRL_C)) { ok = FALSE; break; }   /* aborted */
+        }
+        if (n < 0) ok = FALSE;
+        Close(in);
+        if (!Close(out)) ok = FALSE;                    /* final buffered flush can fail */
+        if (!ok) DeleteFile((STRPTR)dst);               /* don't leave a truncated copy */
+        else if (haveInfo) {                            /* protection last: it may drop 'w'/'d' */
+            if (fib->fib_Comment[0]) SetComment((STRPTR)dst, (STRPTR)fib->fib_Comment);
+            SetFileDate((STRPTR)dst, &fib->fib_Date);
+            SetProtection((STRPTR)dst, fib->fib_Protection);
+        }
+    }
+    if (fib) FreeDosObject(DOS_FIB, fib);
+    FreeVec(buf);
     return ok;
 }
 
@@ -558,8 +627,6 @@ static void refresh1(struct Pane *p) { scanPane(p); syncScroller(p); drawPane(p)
 /* ---- tagging / multi-select working set --------------------------------- */
 
 struct WItem { char name[108]; BOOL isdir; };
-#define MAXWORK 256
-static struct WItem g_work[MAXWORK];   /* shared (ops are sequential) — keeps ~28KB off the stack */
 
 static void clearTags(struct Pane *p)
 {
@@ -571,17 +638,29 @@ static void clearTags(struct Pane *p)
 #define IS_NAV(nm)    (IS_DOT(nm) || IS_DOTDOT(nm))
 
 /* Snapshot the working set BY NAME (tagged rows, or the cursor row if none
- * tagged) so destructive ops can rescan without index drift. ".." is excluded. */
-static int gatherWork(struct Pane *p, struct WItem *w, int max)
+ * tagged) so destructive ops can rescan without index drift. ".." is excluded.
+ * Returns the count and an AllocVec'd array in *out (caller FreeVec()s it;
+ * NULL when the count is 0). Returns -1 if the array can't be allocated. */
+static int gatherWork(struct Pane *p, struct WItem **out)
 {
-    int n = 0, i;
-    for (i = 0; i < p->count && n < max; i++)
-        if (p->entries[i].tagged && !IS_NAV(p->entries[i].name)) {
-            strcpy(w[n].name, p->entries[i].name); w[n].isdir = p->entries[i].isdir; n++;
-        }
-    if (n == 0 && p->sel >= 0 && p->sel < p->count && !IS_NAV(p->entries[p->sel].name)) {
-        strcpy(w[0].name, p->entries[p->sel].name); w[0].isdir = p->entries[p->sel].isdir; n = 1;
+    int n = 0, i; BOOL useSel = FALSE; struct WItem *w;
+    *out = NULL;
+    for (i = 0; i < p->count; i++)
+        if (p->entries[i].tagged && !IS_NAV(p->entries[i].name)) n++;
+    if (n == 0) {
+        if (p->sel < 0 || p->sel >= p->count || IS_NAV(p->entries[p->sel].name)) return 0;
+        n = 1; useSel = TRUE;
     }
+    if (!(w = AllocVec(sizeof(struct WItem) * n, MEMF_ANY))) return -1;
+    if (useSel) { strcpy(w[0].name, p->entries[p->sel].name); w[0].isdir = p->entries[p->sel].isdir; }
+    else {
+        int k = 0;
+        for (i = 0; i < p->count; i++)
+            if (p->entries[i].tagged && !IS_NAV(p->entries[i].name)) {
+                strcpy(w[k].name, p->entries[i].name); w[k].isdir = p->entries[i].isdir; k++;
+            }
+    }
+    *out = w;
     return n;
 }
 
@@ -658,15 +737,17 @@ static void opRename(void)
 
 static void opDelete(void)
 {
-    struct Pane *p = active(); struct WItem *w = g_work; char full[384], q[80];
-    int n = gatherWork(p, w, MAXWORK), i, fail = 0;
+    struct Pane *p = active(); struct WItem *w; char full[384], q[80];
+    int n = gatherWork(p, &w), i, fail = 0;
+    if (n < 0) { info("Out of memory."); return; }
     if (!n) { info("Select or tag items first."); return; }
-    if (n == 1) { if (!confirm("Delete this item?", w[0].name)) return; }
-    else { fmt(q, sizeof q, "Delete %d tagged items?", n); if (!confirm(q, "")) return; }
+    if (n == 1) { if (!confirm("Delete this item?", w[0].name)) { FreeVec(w); return; } }
+    else { fmt(q, sizeof q, "Delete %d tagged items?", n); if (!confirm(q, "")) { FreeVec(w); return; } }
     for (i = 0; i < n; i++) {
         strcpy(full, p->path); AddPart((STRPTR)full, (STRPTR)w[i].name, sizeof full);
         if (!DeleteFile((STRPTR)full)) fail++;
     }
+    FreeVec(w);
     clearTags(p); refresh1(p);
     if (fail) { fmt(q, sizeof q, "%d of %d failed (drawer not empty?).", fail, n); info(q); }
 }
@@ -684,13 +765,14 @@ static int overwriteAsk(const char *name)
 
 static void opCopy(void)   /* active pane -> other pane */
 {
-    struct Pane *s = active(), *d = other(); struct WItem *w = g_work;
-    char src[384], dst[384], m[80]; int n = gatherWork(s, w, MAXWORK), i;
+    struct Pane *s = active(), *d = other(); struct WItem *w;
+    char src[384], dst[384], m[80]; int n = gatherWork(s, &w), i;
     int copied = 0, fail = 0, skipdir = 0, skipover = 0;
     BOOL yesall = FALSE, cancelled = FALSE;
+    if (n < 0) { info("Out of memory."); return; }
     if (!n) { info("Select or tag items first."); return; }
     if (ci_cmp(s->path, d->path) == 0) {       /* same drawer: copyFile would truncate the file onto itself */
-        info("Both panes show the same drawer.\nNothing to copy."); return;
+        FreeVec(w); info("Both panes show the same drawer.\nNothing to copy."); return;
     }
     for (i = 0; i < n; i++) {
         if (w[i].isdir) { skipdir++; continue; }     /* recursive drawer copy still TODO */
@@ -708,6 +790,7 @@ static void opCopy(void)   /* active pane -> other pane */
         }
         if (copyFile(src, dst)) copied++; else fail++;
     }
+    FreeVec(w);
     clearTags(s); refresh1(d); drawPane(s);
     if (cancelled || fail || skipdir || skipover)
         { fmt(m, sizeof m, "%d copied, %d failed, %d skipped, %d drawer(s).",
@@ -716,15 +799,17 @@ static void opCopy(void)   /* active pane -> other pane */
 
 static void opMove(void)   /* active pane -> other pane (same-volume rename) */
 {
-    struct Pane *s = active(), *d = other(); struct WItem *w = g_work;
-    char oldp[384], newp[384], m[80]; int n = gatherWork(s, w, MAXWORK), i, fail = 0;
+    struct Pane *s = active(), *d = other(); struct WItem *w;
+    char oldp[384], newp[384], m[80]; int n = gatherWork(s, &w), i, fail = 0;
+    if (n < 0) { info("Out of memory."); return; }
     if (!n) { info("Select or tag items first."); return; }
-    if (ci_cmp(s->path, d->path) == 0) { info("Both panes show the same drawer."); return; }
+    if (ci_cmp(s->path, d->path) == 0) { FreeVec(w); info("Both panes show the same drawer."); return; }
     for (i = 0; i < n; i++) {
         strcpy(oldp, s->path); AddPart((STRPTR)oldp, (STRPTR)w[i].name, sizeof oldp);
         strcpy(newp, d->path); AddPart((STRPTR)newp, (STRPTR)w[i].name, sizeof newp);
         if (!Rename((STRPTR)oldp, (STRPTR)newp)) fail++;
     }
+    FreeVec(w);
     clearTags(s); refresh1(s); refresh1(d);
     if (fail) { fmt(m, sizeof m, "%d of %d failed (cross-volume move comes next).", fail, n); info(m); }
 }
@@ -791,8 +876,9 @@ static void opEdit(void)
 
 static void opExtract(void)   /* extract tagged archive(s) into the other pane */
 {
-    struct Pane *s = active(), *d = other(); struct WItem *w = g_work;
-    char cmd[700], arc[384], m[80]; int n = gatherWork(s, w, MAXWORK), i, got = 0, skip = 0;
+    struct Pane *s = active(), *d = other(); struct WItem *w;
+    char cmd[700], arc[384], m[80]; int n = gatherWork(s, &w), i, got = 0, skip = 0;
+    if (n < 0) { info("Out of memory."); return; }
     if (!n) { info("Select or tag an archive first."); return; }
     for (i = 0; i < n; i++) {
         if (w[i].isdir || !isArchive(w[i].name)) { skip++; continue; }
@@ -801,6 +887,7 @@ static void opExtract(void)   /* extract tagged archive(s) into the other pane *
         launchCommand(cmd, FALSE);                    /* extract into the destination pane */
         got++;
     }
+    FreeVec(w);
     clearTags(s); refresh1(d); drawPane(s);
     if (skip) { fmt(m, sizeof m, "%d extracted, %d skipped (not an archive).", got, skip); info(m); }
 }
@@ -991,13 +1078,14 @@ static int chooseList(const char *title, char *base, int stride, int n)
 
 static BOOL pickVolume(char *out, int outlen)
 {
-    static char vols[80][40];          /* static: keep this off the small stack */
-    int nv = getVolumes(vols, 80), idx;
-    if (nv <= 0) return FALSE;
-    idx = chooseList("Pick volume / device / assign", (char *)vols, 40, nv);
-    if (idx < 0) return FALSE;
-    strncpy(out, vols[idx], outlen - 1); out[outlen - 1] = '\0';
-    return TRUE;
+    char (*vols)[40] = AllocVec(80 * 40, MEMF_ANY);   /* heap: keep it off the small stack */
+    int nv, idx;
+    if (!vols) { info("Out of memory."); return FALSE; }
+    nv = getVolumes(vols, 80);
+    idx = (nv > 0) ? chooseList("Pick volume / device / assign", (char *)vols, 40, nv) : -1;
+    if (idx >= 0) { strncpy(out, vols[idx], outlen - 1); out[outlen - 1] = '\0'; }
+    FreeVec(vols);
+    return idx >= 0;
 }
 
 /* ---- Find: recursive name-pattern search ------------------------------- */
@@ -1027,7 +1115,7 @@ static void findWalk(const char *dir, const UBYTE *pat, char res[][256], int *nr
 
 static void opFind(void)
 {
-    static char res[200][256];
+    char (*res)[256];                  /* 200 x 256 = 50 KB result table, AllocVec'd per search */
     struct Pane *p = active();
     char raw[80] = "", patbuf[200]; UBYTE pat[260];
     int nr = 0, idx, i;
@@ -1038,15 +1126,17 @@ static void opFind(void)
         fmt(patbuf, sizeof patbuf, "#?%s#?", raw);
     else { strncpy(patbuf, raw, sizeof patbuf - 1); patbuf[sizeof patbuf - 1] = '\0'; }
     if (ParsePatternNoCase((STRPTR)patbuf, (STRPTR)pat, sizeof pat) < 0) { info("Bad search pattern."); return; }
+    if (!(res = AllocVec(200 * 256, MEMF_ANY))) { info("Out of memory."); return; }
     pr = (struct Process *)FindTask(NULL); oldwp = pr->pr_WindowPtr; pr->pr_WindowPtr = (APTR)-1L;
     findWalk(p->path, pat, res, &nr, 200, 0);
     pr->pr_WindowPtr = oldwp;
-    if (nr == 0) { info("No matches found."); return; }
+    if (nr == 0) { FreeVec(res); info("No matches found."); return; }
     idx = chooseList("Find results - click to open", (char *)res, 256, nr);
-    if (idx < 0) return;
+    if (idx < 0) { FreeVec(res); return; }
     {   /* navigate: split the chosen full path into directory + filename */
         char full[256], dir[256], fn[120]; int k, sep = -1;
         strcpy(full, res[idx]); k = strlen(full);
+        FreeVec(res);                  /* done with the result table */
         for (i = k - 1; i >= 0; i--) if (full[i] == '/' || full[i] == ':') { sep = i; break; }
         if (sep < 0) { strcpy(dir, p->path); strcpy(fn, full); }
         else if (full[sep] == ':') { memcpy(dir, full, sep + 1); dir[sep + 1] = '\0'; strcpy(fn, full + sep + 1); }
