@@ -42,7 +42,7 @@ proven, already-installed Amiga tools — see **[Dependencies](#dependencies)**.
 
 ## Installing
 
-Unpack the **.lha** wherever you keep tools (`LhA x AmiFM-1.0.1.lha Work:`), open the AmiFM
+Unpack the **.lha** wherever you keep tools (`LhA x AmiFM-1.1.lha Work:`), open the AmiFM
 drawer and double-click **AmiFM**. The features that hand work to other programs need those
 installed - see [Dependencies](#dependencies).
 

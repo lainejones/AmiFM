@@ -36,6 +36,10 @@
 #include <proto/wb.h>
 #include <proto/icon.h>
 
+/* AmigaDOS version cookie (the C: Version command / $VER reads this) */
+static const char verstag[] __attribute__((used)) =
+    "$VER: AmiFM 1.1 (01.10.2026)";
+
 struct IntuitionBase *IntuitionBase = NULL;
 struct GfxBase       *GfxBase       = NULL;
 struct Library       *GadToolsBase  = NULL;
