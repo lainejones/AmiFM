@@ -40,6 +40,17 @@ proven, already-installed Amiga tools — see **[Dependencies](#dependencies)**.
 
 ---
 
+## Installing
+
+Unpack the **.lha** wherever you keep tools (`LhA x AmiFM-1.0.1.lha Work:`), open the AmiFM
+drawer and double-click **AmiFM**. The features that hand work to other programs need those
+installed - see [Dependencies](#dependencies).
+
+From the **.zip** instead: a zip can't store AmigaDOS protection bits, so AmiFM arrives
+without its `e` (executable) flag and won't start until you set it:
+
+    Protect AmiFM/AmiFM +e
+
 ## Dependencies
 
 AmiFM itself only needs core OS libraries. The View/Edit/Extract/Pack actions
