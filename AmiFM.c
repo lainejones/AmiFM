@@ -36,9 +36,12 @@
 #include <proto/wb.h>
 #include <proto/icon.h>
 
+#include "finder.h"     /* AmiFind's search engine (engine/) - Find */
+#include "grepeng.h"    /* AmiGrep's, renamed (engine/) - Grep */
+
 /* AmigaDOS version cookie (the C: Version command / $VER reads this) */
 static const char verstag[] __attribute__((used)) =
-    "$VER: AmiFM 1.1 (01.10.2026)";
+    "$VER: AmiFM 1.2 (14.10.2026)";
 
 struct IntuitionBase *IntuitionBase = NULL;
 struct GfxBase       *GfxBase       = NULL;
@@ -60,10 +63,10 @@ static UWORD pTEXT, pBG, pFILL, pFTXT, pSHADOW, pSHINE;
 static int  g_active = 0;             /* focused pane: source for ops, other = dest */
 static const char *toolLabels[] = {
     "View",    "Edit",    "Copy", "Move", "Rename", "Delete", "MakeDir",   /* row 0 */
-    "AddIcon", "Extract", "Pack", "Find", "Swap",   "All",    "None"       /* row 1 */
+    "AddIcon", "Extract", "Pack", "Find", "Grep", "Swap", "All", "None"    /* row 1 */
 };
-#define NBTN 14
-static const UBYTE toolRow[NBTN] = { 0,0,0,0,0,0,0, 1,1,1,1,1,1,1 };
+#define NBTN 15
+static const UBYTE toolRow[NBTN] = { 0,0,0,0,0,0,0, 1,1,1,1,1,1,1,1 };
 static WORD g_btnX[NBTN], g_btnYr[NBTN], g_btnWr[NBTN], g_btnH, g_btnTop;   /* custom buttons, stacked rows */
 
 static struct Menu *g_menu = NULL;     /* right-button menu strip */
@@ -1013,17 +1016,21 @@ static void drawList(struct Window *vw, char *base, int stride, int n, int top, 
 static int chooseList(const char *title, char *base, int stride, int n)
 {
     struct Window *vw;
-    int chosen = -1, i, hov = -1, top = 0, maxl = 12;
+    int chosen = -1, i, hov = -1, top = 0, maxl = 12, rows;
     WORD tH = scr->WBorTop + (scr->Font ? scr->Font->ta_YSize : 8) + 1;
     WORD w, h;
     BOOL done = FALSE;
     if (n <= 0) return -1;
     for (i = 0; i < n; i++) { int l = strlen(base + (long)i * stride); if (l > maxl) maxl = l; }
-    if (maxl > 52) maxl = 52;
+    if (maxl > 76) maxl = 76;                       /* Grep rows are long; the window still fits the screen */
     w = maxl * g_cw + PICK_SBW + 14; if (w < 150) w = 150; if (w > scr->Width - 20) w = scr->Width - 20;
-    h = tH + (n < 18 ? n : 18) * g_rowH + 4 + scr->WBorBottom; if (h > scr->Height - 10) h = scr->Height - 10;
+    /* inner height for the rows themselves (the bottom border is taller than WBorBottom
+     * with a size gadget, so an outer height came out a row short) */
+    rows = (n < 18 ? n : 18);
+    while (rows > 1 && tH + rows * g_rowH + 2 + 12 > scr->Height - 10) rows--;
+    h = tH + rows * g_rowH + 2 + 12;
     vw = OpenWindowTags(NULL, WA_Left, (scr->Width - w) / 2, WA_Top, (scr->Height - h) / 2,
-        WA_Width, w, WA_Height, h, WA_MinWidth, 120, WA_MinHeight, 70,
+        WA_Width, w, WA_InnerHeight, rows * g_rowH + 2, WA_MinWidth, 120, WA_MinHeight, 70,
         WA_MaxWidth, (ULONG)scr->Width, WA_MaxHeight, (ULONG)scr->Height,
         WA_Title, (ULONG)title,
         WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_MOUSEBUTTONS | IDCMP_MOUSEMOVE | IDCMP_NEWSIZE,
@@ -1092,69 +1099,314 @@ static BOOL pickVolume(char *out, int outlen)
     return idx >= 0;
 }
 
-/* ---- Find: recursive name-pattern search ------------------------------- */
+/* ---- Find and Grep: AmiFind's and AmiGrep's engines (engine/) ----------- */
 
-static void findWalk(const char *dir, const UBYTE *pat, char res[][256], int *nr, int maxr, int depth)
+#define RES_MAX  1000           /* results kept per search; the search stops there */
+#define RES_PATH 256            /* a result's full path */
+#define RES_DISP 160            /* Grep: the "file:line: text" row that is listed */
+
+struct Results {
+    char *path, *disp;          /* n x RES_PATH, and n x RES_DISP for Grep */
+    int   n, cap;
+    BOOL  grep, full;           /* full: RES_MAX (or memory) reached, search stopped */
+};
+
+static void resFree(struct Results *r)
 {
-    BPTR lock; struct FileInfoBlock *fib;
-    if (*nr >= maxr || depth > 16) return;
-    lock = Lock((STRPTR)dir, ACCESS_READ);
-    if (!lock) return;
-    fib = AllocDosObject(DOS_FIB, NULL);
-    if (fib && Examine(lock, fib)) {
-        while (ExNext(lock, fib) && *nr < maxr) {
-            char child[256];
-            BOOL isdir = (fib->fib_DirEntryType > 0);
-            strcpy(child, dir);
-            AddPart((STRPTR)child, (STRPTR)fib->fib_FileName, sizeof child);
-            if (MatchPatternNoCase((UBYTE *)pat, (STRPTR)fib->fib_FileName)) {
-                strncpy(res[*nr], child, 255); res[*nr][255] = '\0'; (*nr)++;
-            }
-            if (isdir) findWalk(child, pat, res, nr, maxr, depth + 1);
-        }
-    }
-    if (fib) FreeDosObject(DOS_FIB, fib);
-    UnLock(lock);
+    if (r->path) FreeVec(r->path);
+    if (r->disp) FreeVec(r->disp);
+    r->path = r->disp = NULL; r->n = r->cap = 0;
 }
+
+/* room for one more result: the tables grow on demand (64, 128, ... RES_MAX) */
+static BOOL resGrow(struct Results *r)
+{
+    char *np, *nd = NULL; int nc;
+    if (r->n < r->cap) return TRUE;
+    if (r->cap >= RES_MAX) { r->full = TRUE; return FALSE; }
+    nc = r->cap ? r->cap * 2 : 64; if (nc > RES_MAX) nc = RES_MAX;
+    if (!(np = AllocVec((ULONG)nc * RES_PATH, MEMF_ANY))) { r->full = TRUE; return FALSE; }
+    if (r->grep && !(nd = AllocVec((ULONG)nc * RES_DISP, MEMF_ANY))) { FreeVec(np); r->full = TRUE; return FALSE; }
+    if (r->n) {
+        CopyMem(r->path, np, (ULONG)r->n * RES_PATH);
+        if (nd) CopyMem(r->disp, nd, (ULONG)r->n * RES_DISP);
+    }
+    if (r->path) FreeVec(r->path);
+    if (r->disp) FreeVec(r->disp);
+    r->path = np; r->disp = nd; r->cap = nc;
+    return TRUE;
+}
+
+/* the search's own small window: live counts and a Stop button (Esc, Ctrl-C too) */
+struct Busy {
+    struct Window  *w;
+    struct Gadget  *gl;
+    struct Results *res;
+    ULONG          *files, *dirs;   /* the engine's running counts */
+    BOOL            stop;
+};
+
+static void busyDraw(struct Busy *b)
+{
+    char t[72]; struct RastPort *rp; WORD x0, y0;
+    if (!b->w) return;
+    rp = b->w->RPort; x0 = b->w->BorderLeft + 4; y0 = b->w->BorderTop + 3;
+    fmt(t, sizeof t, "%d found  %d files  %d drawers", (long)b->res->n, (long)*b->files, (long)*b->dirs);
+    SetAPen(rp, pBG); RectFill(rp, x0, y0, b->w->Width - b->w->BorderRight - 5, y0 + g_rowH);
+    SetAPen(rp, pTEXT); SetDrMd(rp, JAM1);
+    Move(rp, x0 + 4, y0 + g_base); Text(rp, t, strlen(t));
+}
+
+static void busyOpen(struct Busy *b, const char *title)
+{
+    struct NewGadget ng; struct Gadget *g;
+    WORD tH = scr->WBorTop + (scr->Font ? scr->Font->ta_YSize : 8) + 1;
+    WORD w = 340, h, by = tH + 3 + g_rowH + 6;
+    if (w > scr->Width - 8) w = scr->Width - 8;
+    h = by + 14 + 6 + scr->WBorBottom;
+    b->stop = FALSE; b->w = NULL; b->gl = NULL;
+    g = CreateContext(&b->gl);
+    ng.ng_TextAttr = &topaz8; ng.ng_VisualInfo = vi; ng.ng_Flags = 0; ng.ng_UserData = NULL;
+    ng.ng_LeftEdge = (w - 80) / 2; ng.ng_TopEdge = by; ng.ng_Width = 80; ng.ng_Height = 14;
+    ng.ng_GadgetText = (STRPTR)"Stop"; ng.ng_GadgetID = 1;
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    if (!g) { FreeGadgets(b->gl); b->gl = NULL; return; }   /* no window: Ctrl-C still stops */
+    b->w = OpenWindowTags(NULL, WA_Left, (scr->Width - w) / 2, WA_Top, (scr->Height - h) / 2,
+        WA_Width, w, WA_Height, h, WA_Title, (ULONG)title, WA_Gadgets, (ULONG)b->gl,
+        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_VANILLAKEY | BUTTONIDCMP,
+        WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET | WFLG_ACTIVATE |
+                  WFLG_SMART_REFRESH | WFLG_RMBTRAP,
+        WA_PubScreen, (ULONG)scr, TAG_END);
+    if (!b->w) { FreeGadgets(b->gl); b->gl = NULL; return; }
+    SetFont(b->w->RPort, font);
+    GT_RefreshWindow(b->w, NULL);
+    busyDraw(b);
+}
+
+static void busyClose(struct Busy *b)
+{
+    if (b->w) CloseWindow(b->w);
+    if (b->gl) FreeGadgets(b->gl);
+    b->w = NULL; b->gl = NULL;
+}
+
+/* the engines' poll hook: TRUE stops the search */
+static BOOL busyPoll(APTR user)
+{
+    struct Busy *b = (struct Busy *)user; struct IntuiMessage *m;
+    if (SetSignal(0L, SIGBREAKF_CTRL_C) & SIGBREAKF_CTRL_C) b->stop = TRUE;
+    if (b->w) {
+        while ((m = GT_GetIMsg(b->w->UserPort))) {
+            ULONG cl = m->Class; UWORD code = m->Code;
+            GT_ReplyIMsg(m);
+            if (cl == IDCMP_CLOSEWINDOW || cl == IDCMP_GADGETUP) b->stop = TRUE;
+            else if (cl == IDCMP_VANILLAKEY && (code == 27 || code == 's' || code == 'S')) b->stop = TRUE;
+            else if (cl == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(b->w); GT_EndRefresh(b->w, TRUE); }
+        }
+        busyDraw(b);
+    }
+    return b->stop;
+}
+
+/* main window while a search runs: busy pointer; afterwards the clicks and menu
+ * picks made on it meanwhile are dropped, not replayed (a queued Delete must
+ * not fire), and it is redrawn in case it was resized or uncovered */
+static void searchBegin(void)
+{
+    SetWindowPointer(win, WA_BusyPointer, TRUE, TAG_END);
+}
+
+static void searchEnd(void)
+{
+    struct IntuiMessage *m; BOOL damaged = FALSE;
+    SetWindowPointer(win, TAG_END);
+    while ((m = (struct IntuiMessage *)GetMsg(win->UserPort))) {
+        if (m->Class == IDCMP_REFRESHWINDOW) damaged = TRUE;
+        ReplyMsg((struct Message *)m);
+    }
+    computeLayout();
+    if (damaged) { BeginRefresh(win); drawCustom(); EndRefresh(win, TRUE); }
+    else drawCustom();
+}
+
+/* show a found file or drawer: its drawer in the pane, the entry selected */
+static void jumpTo(struct Pane *p, const char *full)
+{
+    char dir[256], fn[120]; int i, k = strlen(full), sep = -1;
+    for (i = k - 1; i >= 0; i--) if (full[i] == '/' || full[i] == ':') { sep = i; break; }
+    if (sep < 0) { strcpy(dir, p->path); strncpy(fn, full, sizeof fn - 1); fn[sizeof fn - 1] = '\0'; }
+    else {
+        int dl = (full[sep] == ':') ? sep + 1 : sep;     /* keep the colon of "VOL:" */
+        if (dl > (int)sizeof dir - 1) dl = sizeof dir - 1;
+        memcpy(dir, full, dl); dir[dl] = '\0';
+        strncpy(fn, full + sep + 1, sizeof fn - 1); fn[sizeof fn - 1] = '\0';
+    }
+    strncpy(p->path, dir, sizeof(p->path) - 1); p->path[sizeof(p->path) - 1] = '\0';
+    scanPane(p); syncScroller(p);
+    for (i = 0; i < p->count; i++)
+        if (strcmp(p->entries[i].name, fn) == 0) {
+            p->sel = i;
+            if (i < p->top || i >= p->top + p->visRows) { p->top = i - p->visRows / 2; if (p->top < 0) p->top = 0; }
+            break;
+        }
+    drawPane(&panes[0]); drawPane(&panes[1]); drawTools(); showSel(p);
+}
+
+/* list the results; a click jumps there. Frees the results. */
+static void showResults(struct Results *r, const char *what, const char *unit, BOOL stopped)
+{
+    static char title[80];
+    char full[RES_PATH]; int idx;
+    fmt(title, sizeof title, "%s: %d %s%s - click to open", what, (long)r->n, unit,
+        r->full ? " (the first)" : stopped ? " (stopped)" : "");
+    idx = chooseList(title, r->grep ? r->disp : r->path, r->grep ? RES_DISP : RES_PATH, r->n);
+    if (idx >= 0) strcpy(full, r->path + (long)idx * RES_PATH);
+    resFree(r);
+    if (idx >= 0) jumpTo(active(), full);
+}
+
+static BOOL findHit(CONST_STRPTR path, BOOL isDir, LONG size, APTR user)
+{
+    struct Results *r = (struct Results *)user; char *d;
+    (void)isDir; (void)size;
+    if (!resGrow(r)) return FALSE;
+    d = r->path + (long)r->n * RES_PATH;
+    strncpy(d, (const char *)path, RES_PATH - 1); d[RES_PATH - 1] = '\0';
+    r->n++;
+    return TRUE;
+}
+
+struct GrepUser { struct Results *r; const char *root; };
+
+static BOOL grepHit(CONST_STRPTR path, ULONG line, CONST_STRPTR text, APTR user)
+{
+    struct GrepUser *gu = (struct GrepUser *)user; struct Results *r = gu->r;
+    const char *rel = (const char *)path, *t = (const char *)text;
+    char *d, *e; int rl = strlen(gu->root);
+    if (!resGrow(r)) return FALSE;
+    d = r->path + (long)r->n * RES_PATH;
+    strncpy(d, rel, RES_PATH - 1); d[RES_PATH - 1] = '\0';
+    if (rl && strncmp(rel, gu->root, rl) == 0 && rel[rl]) { rel += rl; if (*rel == '/') rel++; }
+    d = r->disp + (long)r->n * RES_DISP;                 /* listed relative to the searched drawer */
+    fmt(d, RES_DISP, "%s:%d: ", rel, (long)line);
+    e = d + strlen(d);
+    while (*t == ' ' || *t == '\t') t++;
+    while (*t && e < d + RES_DISP - 1) { char c = *t++; *e++ = ((unsigned char)c < 32) ? ' ' : c; }
+    *e = '\0';
+    r->n++;
+    return TRUE;
+}
+
+/* the matchers are large: kept off the stack */
+static struct Matcher     g_findM;
+static struct GrepMatcher g_grepM;
+static struct NameFilter  g_grepNF;
+static char g_findText[80], g_grepText[120], g_grepFiles[80] = "#?";   /* Files: #? = all */
+static BOOL g_grepCase;
 
 static void opFind(void)
 {
-    char (*res)[256];                  /* 200 x 256 = 50 KB result table, AllocVec'd per search */
-    struct Pane *p = active();
-    char raw[80] = "", patbuf[200]; UBYTE pat[260];
-    int nr = 0, idx, i;
-    struct Process *pr; APTR oldwp;
-    if (!getString("Find (name, or #? pattern):", raw, sizeof raw)) return;
-    if (raw[0] == '\0') return;
-    if (!strpbrk(raw, "#?*%([|]~"))                          /* plain text -> substring match */
-        fmt(patbuf, sizeof patbuf, "#?%s#?", raw);
-    else { strncpy(patbuf, raw, sizeof patbuf - 1); patbuf[sizeof patbuf - 1] = '\0'; }
-    if (ParsePatternNoCase((STRPTR)patbuf, (STRPTR)pat, sizeof pat) < 0) { info("Bad search pattern."); return; }
-    if (!(res = AllocVec(200 * 256, MEMF_ANY))) { info("Out of memory."); return; }
+    struct Pane *p = active(); struct Results r; struct Busy b; struct SearchStats st;
+    struct Process *pr; APTR oldwp; LONG err;
+    if (!getString("Find (name, or #? pattern):", g_findText, sizeof g_findText)) return;
+    if (!matcherInit(&g_findM, g_findText)) { info("Bad search pattern."); return; }
+    memset(&r, 0, sizeof r); memset(&st, 0, sizeof st);
+    b.res = &r; b.files = &st.filesScanned; b.dirs = &st.dirsScanned;
+    searchBegin(); busyOpen(&b, "Find - searching");
     pr = (struct Process *)FindTask(NULL); oldwp = pr->pr_WindowPtr; pr->pr_WindowPtr = (APTR)-1L;
-    findWalk(p->path, pat, res, &nr, 200, 0);
+    err = searchTree(p->path, &g_findM, findHit, &r, busyPoll, &b, &st);
     pr->pr_WindowPtr = oldwp;
-    if (nr == 0) { FreeVec(res); info("No matches found."); return; }
-    idx = chooseList("Find results - click to open", (char *)res, 256, nr);
-    if (idx < 0) { FreeVec(res); return; }
-    {   /* navigate: split the chosen full path into directory + filename */
-        char full[256], dir[256], fn[120]; int k, sep = -1;
-        strcpy(full, res[idx]); k = strlen(full);
-        FreeVec(res);                  /* done with the result table */
-        for (i = k - 1; i >= 0; i--) if (full[i] == '/' || full[i] == ':') { sep = i; break; }
-        if (sep < 0) { strcpy(dir, p->path); strcpy(fn, full); }
-        else if (full[sep] == ':') { memcpy(dir, full, sep + 1); dir[sep + 1] = '\0'; strcpy(fn, full + sep + 1); }
-        else { memcpy(dir, full, sep); dir[sep] = '\0'; strcpy(fn, full + sep + 1); }
-        strncpy(p->path, dir, sizeof(p->path) - 1); p->path[sizeof(p->path) - 1] = '\0';
-        scanPane(p); syncScroller(p);
-        for (i = 0; i < p->count; i++)
-            if (strcmp(p->entries[i].name, fn) == 0) {
-                p->sel = i;
-                if (i < p->top || i >= p->top + p->visRows) { p->top = i - p->visRows / 2; if (p->top < 0) p->top = 0; }
-                break;
+    busyClose(&b); searchEnd();
+    if (err) { resFree(&r); info("Can't read that drawer."); return; }
+    if (r.n == 0) { info(st.aborted ? "Stopped before anything was found." : "No matches found."); return; }
+    showResults(&r, "Find", "found", st.aborted);
+}
+
+/* Grep's requester: the text, which files (a #? pattern; #? or empty = all), match case */
+static BOOL getGrepArgs(void)
+{
+    struct Window *rw; struct Gadget *gl = NULL, *gg, *sText, *sFiles; struct NewGadget ng;
+    BOOL ok = FALSE, done = FALSE, cs = g_grepCase;
+    WORD tH = scr->WBorTop + (scr->Font ? scr->Font->ta_YSize : 8) + 1;
+    WORD w = 340, lx = 64, y = tH + 4, h;
+    gg = CreateContext(&gl);
+    ng.ng_TextAttr = &topaz8; ng.ng_VisualInfo = vi; ng.ng_UserData = NULL; ng.ng_Flags = PLACETEXT_LEFT;
+    ng.ng_LeftEdge = lx; ng.ng_TopEdge = y; ng.ng_Width = w - lx - 10; ng.ng_Height = 14;
+    ng.ng_GadgetText = (STRPTR)"Text"; ng.ng_GadgetID = 1;
+    gg = sText = CreateGadget(STRING_KIND, gg, &ng, GTST_String, (ULONG)g_grepText,
+                              GTST_MaxChars, sizeof g_grepText - 1, GA_TabCycle, TRUE, TAG_END);
+    ng.ng_TopEdge = y += 18; ng.ng_GadgetText = (STRPTR)"Files"; ng.ng_GadgetID = 2;
+    gg = sFiles = CreateGadget(STRING_KIND, gg, &ng, GTST_String, (ULONG)g_grepFiles,
+                               GTST_MaxChars, sizeof g_grepFiles - 1, GA_TabCycle, TRUE, TAG_END);
+    ng.ng_TopEdge = y += 18; ng.ng_Width = 26; ng.ng_Height = 11; ng.ng_Flags = PLACETEXT_RIGHT;
+    ng.ng_GadgetText = (STRPTR)"Match case"; ng.ng_GadgetID = 3;
+    gg = CreateGadget(CHECKBOX_KIND, gg, &ng, GTCB_Checked, (ULONG)cs, TAG_END);
+    ng.ng_TopEdge = y += 18; ng.ng_LeftEdge = 8; ng.ng_Width = 80; ng.ng_Height = 14; ng.ng_Flags = 0;
+    ng.ng_GadgetText = (STRPTR)"Search"; ng.ng_GadgetID = 4;
+    gg = CreateGadget(BUTTON_KIND, gg, &ng, TAG_END);
+    ng.ng_LeftEdge = w - 88; ng.ng_GadgetText = (STRPTR)"Cancel"; ng.ng_GadgetID = 5;
+    gg = CreateGadget(BUTTON_KIND, gg, &ng, TAG_END);
+    if (!gg) { FreeGadgets(gl); return FALSE; }
+    h = y + 14 + 6 + scr->WBorBottom;
+
+    rw = OpenWindowTags(NULL, WA_Left, (scr->Width - w) / 2, WA_Top, (scr->Height - h) / 2,
+        WA_Width, w, WA_Height, h, WA_Title, (ULONG)"Grep - search inside files",
+        WA_Gadgets, (ULONG)gl,
+        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | BUTTONIDCMP | STRINGIDCMP | CHECKBOXIDCMP,
+        WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
+        WA_PubScreen, (ULONG)scr, TAG_END);
+    if (!rw) { FreeGadgets(gl); return FALSE; }
+    GT_RefreshWindow(rw, NULL);
+    ActivateGadget(sText, rw, NULL);
+    while (!done) {
+        struct IntuiMessage *m; Wait(1L << rw->UserPort->mp_SigBit);
+        while ((m = GT_GetIMsg(rw->UserPort))) {
+            ULONG cl = m->Class; UWORD code = m->Code; struct Gadget *gd = (struct Gadget *)m->IAddress;
+            GT_ReplyIMsg(m);
+            if (cl == IDCMP_CLOSEWINDOW) done = TRUE;
+            else if (cl == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(rw); GT_EndRefresh(rw, TRUE); }
+            else if (cl == IDCMP_GADGETUP) {
+                switch (gd->GadgetID) {
+                    case 1: case 2: if (code != 9) { ok = TRUE; done = TRUE; } break;  /* Enter; Tab moves on */
+                    case 3: cs = code ? TRUE : FALSE; break;
+                    case 4: ok = TRUE; done = TRUE; break;
+                    case 5: done = TRUE; break;
+                }
             }
-        drawPane(&panes[0]); drawPane(&panes[1]); drawTools(); showSel(p);
+        }
     }
+    if (ok) {
+        STRPTR s = NULL;
+        GT_GetGadgetAttrs(sText, rw, NULL, GTST_String, (ULONG)&s, TAG_END);
+        if (s) { strncpy(g_grepText, (char *)s, sizeof g_grepText - 1); g_grepText[sizeof g_grepText - 1] = '\0'; }
+        s = NULL;
+        GT_GetGadgetAttrs(sFiles, rw, NULL, GTST_String, (ULONG)&s, TAG_END);
+        if (s) { strncpy(g_grepFiles, (char *)s, sizeof g_grepFiles - 1); g_grepFiles[sizeof g_grepFiles - 1] = '\0'; }
+        g_grepCase = cs;
+    }
+    CloseWindow(rw); FreeGadgets(gl);
+    return (ok && g_grepText[0]);
+}
+
+static void opGrep(void)
+{
+    struct Pane *p = active(); struct Results r; struct Busy b; struct GrepStats st; struct GrepUser gu;
+    struct Process *pr; APTR oldwp; LONG err;
+    if (!getGrepArgs()) return;
+    if (!grepMatcherInit(&g_grepM, g_grepText, g_grepCase)) { info("Bad search text."); return; }
+    if (!nameFilterInit(&g_grepNF, g_grepFiles)) { info("Bad Files pattern."); return; }
+    memset(&r, 0, sizeof r); memset(&st, 0, sizeof st);
+    r.grep = TRUE;
+    gu.r = &r; gu.root = p->path;
+    b.res = &r; b.files = &st.filesScanned; b.dirs = &st.dirsScanned;
+    searchBegin(); busyOpen(&b, "Grep - searching");
+    pr = (struct Process *)FindTask(NULL); oldwp = pr->pr_WindowPtr; pr->pr_WindowPtr = (APTR)-1L;
+    err = grepTree(p->path, &g_grepM, &g_grepNF, grepHit, &gu, busyPoll, &b, &st);
+    pr->pr_WindowPtr = oldwp;
+    busyClose(&b); searchEnd();
+    if (err) { resFree(&r); info("Can't read that drawer."); return; }
+    if (r.n == 0) { info(st.aborted ? "Stopped before anything was found." : "No lines found."); return; }
+    showResults(&r, "Grep", "lines", st.aborted);
 }
 
 /* ---- right-button menu, window open, iconify --------------------------- */
@@ -1177,6 +1429,7 @@ static struct NewMenu g_newmenu[] = {
     { NM_ITEM,  (STRPTR)"Parent",      0,           0, 0, (APTR)0 },
     { NM_ITEM,  (STRPTR)"Make Drawer", 0,           0, 0, (APTR)0 },
     { NM_ITEM,  (STRPTR)"Find...",     0,           0, 0, (APTR)0 },
+    { NM_ITEM,  (STRPTR)"Grep...",     0,           0, 0, (APTR)0 },
     { NM_ITEM,  (STRPTR)"Swap Panes",  0,           0, 0, (APTR)0 },
     { NM_ITEM,  (STRPTR)NM_BARLABEL,   0,           0, 0, (APTR)0 },
     { NM_ITEM,  (STRPTR)"Select All",  0,           0, 0, (APTR)0 },
@@ -1328,8 +1581,8 @@ int main(void)
                             case 5: opRename(); break; case 6: opDelete(); break; }
                     } else if (mn == 2) {                /* Pane */
                         switch (in) { case 0: opParent(); break; case 1: opMakeDir(); break;
-                            case 2: opFind(); break; case 3: opSwap(); break;
-                            case 5: opSelectAll(); break; case 6: opClearTags(); break; }
+                            case 2: opFind(); break; case 3: opGrep(); break; case 4: opSwap(); break;
+                            case 6: opSelectAll(); break; case 7: opClearTags(); break; }
                     }
                     mnum = mi ? mi->NextSelect : MENUNULL;
                 }
@@ -1349,8 +1602,9 @@ int main(void)
                                 case 4: opRename();  break; case 5: opDelete();  break;
                                 case 6: opMakeDir(); break; case 7: opAddIcon(); break;
                                 case 8: opExtract(); break; case 9: opPack();    break;
-                                case 10: opFind();   break; case 11: opSwap();   break;
-                                case 12: opSelectAll(); break; case 13: opClearTags(); break; }
+                                case 10: opFind();   break; case 11: opGrep();   break;
+                                case 12: opSwap();   break;
+                                case 13: opSelectAll(); break; case 14: opClearTags(); break; }
                             showSel(active());     /* refresh title (ops may have cleared the selection) */
                             break;
                         }

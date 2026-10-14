@@ -23,8 +23,11 @@ CFLAGS  ?= -Os -noixemul -fomit-frame-pointer -Wall -Wno-pointer-sign -s
 # WinUAE "Work:" mount used by the headless test harness (deploy target).
 WORK    ?= /mnt/c/Amiga/workspace
 
-AmiFM: AmiFM.c
-	$(CC) $(CFLAGS) -o $@ $<
+# engine/: AmiFind's and AmiGrep's search engines (Find and Grep), see engine/README.md
+SRCS    = AmiFM.c engine/finder.c engine/grepeng.c
+
+AmiFM: $(SRCS) engine/finder.h engine/grep.h engine/grep.c engine/grepeng.h
+	$(CC) $(CFLAGS) -Iengine -o $@ $(SRCS)
 
 deploy: AmiFM
 	cp -f AmiFM AmiFM.info $(WORK)/
