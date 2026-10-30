@@ -7,8 +7,7 @@
  * left double-click does the type-aware action (enter drawer / extract archive
  * / view file). The RIGHT button opens the menu strip (incl. Iconify).
  *
- * Build:  m68k-amigaos-gcc -Os -noixemul -Wall -Wno-pointer-sign -s -o AmiFM AmiFM.c
- *         (or just `make`)
+ * Build:  `make` (AmiFM.c + amigui.c + engine/, -Os -noixemul -Wall -s)
  */
 #include <exec/types.h>
 #include <exec/memory.h>
@@ -38,10 +37,15 @@
 
 #include "finder.h"     /* AmiFind's search engine (engine/) - Find */
 #include "grepeng.h"    /* AmiGrep's, renamed (engine/) - Grep */
+#include "amigui.h"     /* shared About box, settings page frame, ENV:/ENVARC: writing */
+
+#define AMIFM_VERSION "1.2"
+/* what About says about the licence - AmiFM has no licence file yet */
+#define AMIFM_LICENCE "Licence: not chosen yet (see the README)."
 
 /* AmigaDOS version cookie (the C: Version command / $VER reads this) */
 static const char verstag[] __attribute__((used)) =
-    "$VER: AmiFM 1.2 (14.10.2026)";
+    "$VER: AmiFM " AMIFM_VERSION " (14.10.2026)";
 
 struct IntuitionBase *IntuitionBase = NULL;
 struct GfxBase       *GfxBase       = NULL;
@@ -144,6 +148,77 @@ static void fmt(char *out, int outsz, const char *f, ...)
     }
     *o = '\0';
     va_end(ap);
+}
+
+/* ---- settings ------------------------------------------------------------
+ * What AmiFM can be set to, and where each value comes from, lowest first:
+ *   1. the built-in defaults (setsDefault below);
+ *   2. ENV:EDITOR - only for Edit, and only while the Edit setting is empty;
+ *   3. the settings file AmiFM.prefs: ENV:AmiFM.prefs, else ENVARC:AmiFM.prefs
+ *      (Settings > ... > Save writes both, Use writes ENV: only, so a Use
+ *      lasts until the next reboot). It is plain text, one KEY=value a line:
+ *      LEFT, RIGHT (the start drawers), VIEW, EDIT, EXTRACT, PACK (the programs).
+ * AmiFM reads no tooltypes, so there are none for the file to override. */
+
+#define PREFS_NAME "AmiFM.prefs"
+
+struct Settings {
+    char left[256], right[256];        /* the panes' start drawers */
+    char view[120];                    /* View:    <view> "<file>" */
+    char edit[120];                    /* Edit:    <edit> "<file>"; empty = ENV:EDITOR, else TextEdit */
+    char extract[120];                 /* Extract: <extract> "<archive>" DEST "<drawer>" OVERWRITE */
+    char pack[120];                    /* Pack:    <pack> a "<name>.lha" "<item>" */
+};
+static struct Settings g_set;
+
+static void setStr(char *dst, int size, const char *v)
+{
+    strncpy(dst, v, size - 1); dst[size - 1] = '\0';
+}
+
+static void setsDefault(struct Settings *s)
+{
+    memset(s, 0, sizeof *s);
+    strcpy(s->left, "SYS:");
+    strcpy(s->right, "RAM:");
+    strcpy(s->view, "SYS:Utilities/MultiView");
+    s->edit[0] = '\0';
+    strcpy(s->extract, "xadUnFile");
+    strcpy(s->pack, "lha");
+}
+
+static void setsLoad(struct Settings *s)
+{
+    char buf[1200], *line, *next;
+    setsDefault(s);
+    if (amg_env_read(PREFS_NAME, buf, sizeof buf) < 0) return;
+    for (line = buf; line && *line; line = next) {
+        char *v;
+        if ((next = strchr(line, '\n'))) *next++ = '\0';
+        if ((v = strchr(line, '\r'))) *v = '\0';
+        if (!(v = strchr(line, '='))) continue;
+        *v++ = '\0';
+        if      (!strcmp(line, "LEFT"))    { if (*v) setStr(s->left, sizeof s->left, v); }
+        else if (!strcmp(line, "RIGHT"))   { if (*v) setStr(s->right, sizeof s->right, v); }
+        else if (!strcmp(line, "VIEW"))    { if (*v) setStr(s->view, sizeof s->view, v); }
+        else if (!strcmp(line, "EDIT"))    setStr(s->edit, sizeof s->edit, v);   /* empty = ENV:EDITOR */
+        else if (!strcmp(line, "EXTRACT")) { if (*v) setStr(s->extract, sizeof s->extract, v); }
+        else if (!strcmp(line, "PACK"))    { if (*v) setStr(s->pack, sizeof s->pack, v); }
+    }
+}
+
+/* keep = Save (ENV: + ENVARC:), else Use (ENV: only) */
+static BOOL setsWrite(const struct Settings *s, BOOL keep)
+{
+    char buf[1200], ln[300];
+    buf[0] = '\0';
+    fmt(ln, sizeof ln, "LEFT=%s\n", s->left);       strcat(buf, ln);
+    fmt(ln, sizeof ln, "RIGHT=%s\n", s->right);     strcat(buf, ln);
+    fmt(ln, sizeof ln, "VIEW=%s\n", s->view);       strcat(buf, ln);
+    fmt(ln, sizeof ln, "EDIT=%s\n", s->edit);       strcat(buf, ln);
+    fmt(ln, sizeof ln, "EXTRACT=%s\n", s->extract); strcat(buf, ln);
+    fmt(ln, sizeof ln, "PACK=%s\n", s->pack);       strcat(buf, ln);
+    return amg_env_write(PREFS_NAME, buf, strlen(buf), keep) ? TRUE : FALSE;
 }
 
 static int cmpEntry(const void *pa, const void *pb)
@@ -859,23 +934,25 @@ static BOOL isArchive(const char *name)
 
 static void opView(void)
 {
-    struct Pane *p = active(); char cmd[460], full[384];
+    struct Pane *p = active(); char cmd[520], full[384];
     if (p->sel < 0 || p->sel >= p->count) { info("Select a file first."); return; }
     if (p->entries[p->sel].isdir) { info("That's a drawer (double-click to enter)."); return; }
     strcpy(full, p->path); AddPart((STRPTR)full, (STRPTR)p->entries[p->sel].name, sizeof full);
-    fmt(cmd, sizeof cmd, "SYS:Utilities/MultiView \"%s\"", full);
+    fmt(cmd, sizeof cmd, "%s \"%s\"", g_set.view, full);   /* Settings > Programs; MultiView by default */
     launchCommand(cmd, TRUE);                        /* async: opens its own window */
 }
 
-/* Edit: open the selected file in a GUI text editor. Defaults to the 3.2 bundled
- * SYS:Tools/TextEdit; set ENV:EDITOR (e.g. to CygnusEd) to override. */
+/* Edit: open the selected file in a GUI text editor - the Edit setting
+ * (Settings > Programs) if set, else ENV:EDITOR (e.g. CygnusEd), else the
+ * 3.2 bundled SYS:Tools/TextEdit. */
 static void opEdit(void)
 {
     struct Pane *p = active(); char full[384], ed[120], cmd[520];
     if (p->sel < 0 || p->sel >= p->count) { info("Select a file to edit."); return; }
     if (p->entries[p->sel].isdir) { info("That's a drawer, not a file."); return; }
     strcpy(full, p->path); AddPart((STRPTR)full, (STRPTR)p->entries[p->sel].name, sizeof full);
-    if (GetVar((STRPTR)"EDITOR", (STRPTR)ed, sizeof ed, GVF_GLOBAL_ONLY) <= 0)
+    if (g_set.edit[0]) strcpy(ed, g_set.edit);
+    else if (GetVar((STRPTR)"EDITOR", (STRPTR)ed, sizeof ed, GVF_GLOBAL_ONLY) <= 0)
         strcpy(ed, "SYS:Tools/TextEdit");
     fmt(cmd, sizeof cmd, "%s \"%s\"", ed, full);
     launchCommand(cmd, TRUE);                         /* async: editor opens its own window */
@@ -884,13 +961,13 @@ static void opEdit(void)
 static void opExtract(void)   /* extract tagged archive(s) into the other pane */
 {
     struct Pane *s = active(), *d = other(); struct WItem *w;
-    char cmd[700], arc[384], m[80]; int n = gatherWork(s, &w), i, got = 0, skip = 0;
+    char cmd[800], arc[384], m[80]; int n = gatherWork(s, &w), i, got = 0, skip = 0;
     if (n < 0) { info("Out of memory."); return; }
     if (!n) { info("Select or tag an archive first."); return; }
     for (i = 0; i < n; i++) {
         if (w[i].isdir || !isArchive(w[i].name)) { skip++; continue; }
         strcpy(arc, s->path); AddPart((STRPTR)arc, (STRPTR)w[i].name, sizeof arc);
-        fmt(cmd, sizeof cmd, "xadUnFile \"%s\" DEST \"%s\" OVERWRITE", arc, d->path);
+        fmt(cmd, sizeof cmd, "%s \"%s\" DEST \"%s\" OVERWRITE", g_set.extract, arc, d->path);
         launchCommand(cmd, FALSE);                    /* extract into the destination pane */
         got++;
     }
@@ -905,7 +982,7 @@ static void opPack(void)
     if (p->sel < 0 || p->sel >= p->count) { info("Select a file/drawer to pack."); return; }
     if (IS_NAV(p->entries[p->sel].name)) return;
     if (!getString("Archive name (.lha added):", name, sizeof name)) return;
-    fmt(cmd, sizeof cmd, "lha a \"%s.lha\" \"%s\"", name, p->entries[p->sel].name);
+    fmt(cmd, sizeof cmd, "%s a \"%s.lha\" \"%s\"", g_set.pack, name, p->entries[p->sel].name);
     runInDir(p->path, cmd, FALSE);                   /* pack within the active pane */
     refresh1(p);
 }
@@ -1411,31 +1488,164 @@ static void opGrep(void)
 
 /* ---- right-button menu, window open, iconify --------------------------- */
 
-static struct NewMenu g_newmenu[] = {
-    { NM_TITLE, (STRPTR)"AmiFM",       0,           0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)"Reload",      (STRPTR)"R", 0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)"Iconify",     (STRPTR)"I", 0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)NM_BARLABEL,   0,           0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)"Quit",        (STRPTR)"Q", 0, 0, (APTR)0 },
-    { NM_TITLE, (STRPTR)"Selection",   0,           0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)"View",        0,           0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)"Edit",        0,           0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)"Extract",     0,           0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)"Pack",        0,           0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)NM_BARLABEL,   0,           0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)"Rename",      0,           0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)"Delete",      0,           0, 0, (APTR)0 },
-    { NM_TITLE, (STRPTR)"Pane",        0,           0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)"Parent",      0,           0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)"Make Drawer", 0,           0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)"Find...",     0,           0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)"Grep...",     0,           0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)"Swap Panes",  0,           0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)NM_BARLABEL,   0,           0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)"Select All",  0,           0, 0, (APTR)0 },
-    { NM_ITEM,  (STRPTR)"Clear Tags",  0,           0, 0, (APTR)0 },
-    { NM_END,   0,                     0,           0, 0, (APTR)0 }
+/* every item carries its MN_* id as user data (GTMENUITEM_USERDATA), so the
+ * dispatch in doMenu() does not depend on item positions */
+enum {
+    MN_NONE = 0,
+    MN_RELOAD, MN_ICONIFY, MN_ABOUT, MN_QUIT,                                   /* AmiFM */
+    MN_VIEW, MN_EDIT, MN_COPY, MN_MOVE, MN_RENAME, MN_DELETE, MN_ADDICON,       /* Selection */
+    MN_EXTRACT, MN_PACK,
+    MN_PARENT, MN_MAKEDIR, MN_FIND, MN_GREP, MN_SWAP, MN_SELALL, MN_CLEARTAGS,  /* Pane */
+    MN_SET_DRAWERS, MN_SET_PROGRAMS                                             /* Settings */
 };
+
+static struct NewMenu g_newmenu[] = {
+    { NM_TITLE, (STRPTR)"AmiFM",            0,           0, 0, (APTR)0 },
+    { NM_ITEM,  (STRPTR)"Reload",           (STRPTR)"R", 0, 0, (APTR)MN_RELOAD },
+    { NM_ITEM,  (STRPTR)"Iconify",          (STRPTR)"I", 0, 0, (APTR)MN_ICONIFY },
+    { NM_ITEM,  (STRPTR)NM_BARLABEL,        0,           0, 0, (APTR)0 },
+    { NM_ITEM,  (STRPTR)"About...",         (STRPTR)"?", 0, 0, (APTR)MN_ABOUT },
+    { NM_ITEM,  (STRPTR)NM_BARLABEL,        0,           0, 0, (APTR)0 },
+    { NM_ITEM,  (STRPTR)"Quit",             (STRPTR)"Q", 0, 0, (APTR)MN_QUIT },
+    { NM_TITLE, (STRPTR)"Selection",        0,           0, 0, (APTR)0 },
+    { NM_ITEM,  (STRPTR)"View",             (STRPTR)"V", 0, 0, (APTR)MN_VIEW },
+    { NM_ITEM,  (STRPTR)"Edit",             (STRPTR)"E", 0, 0, (APTR)MN_EDIT },
+    { NM_ITEM,  (STRPTR)NM_BARLABEL,        0,           0, 0, (APTR)0 },
+    { NM_ITEM,  (STRPTR)"Copy",             (STRPTR)"C", 0, 0, (APTR)MN_COPY },
+    { NM_ITEM,  (STRPTR)"Move",             (STRPTR)"M", 0, 0, (APTR)MN_MOVE },
+    { NM_ITEM,  (STRPTR)"Rename",           (STRPTR)"N", 0, 0, (APTR)MN_RENAME },
+    { NM_ITEM,  (STRPTR)"Delete",           (STRPTR)"D", 0, 0, (APTR)MN_DELETE },
+    { NM_ITEM,  (STRPTR)"Add Icon",         0,           0, 0, (APTR)MN_ADDICON },
+    { NM_ITEM,  (STRPTR)NM_BARLABEL,        0,           0, 0, (APTR)0 },
+    { NM_ITEM,  (STRPTR)"Extract",          (STRPTR)"X", 0, 0, (APTR)MN_EXTRACT },
+    { NM_ITEM,  (STRPTR)"Pack",             (STRPTR)"K", 0, 0, (APTR)MN_PACK },
+    { NM_TITLE, (STRPTR)"Pane",             0,           0, 0, (APTR)0 },
+    { NM_ITEM,  (STRPTR)"Parent",           (STRPTR)"P", 0, 0, (APTR)MN_PARENT },
+    { NM_ITEM,  (STRPTR)"Make Drawer...",   0,           0, 0, (APTR)MN_MAKEDIR },
+    { NM_ITEM,  (STRPTR)"Find...",          (STRPTR)"F", 0, 0, (APTR)MN_FIND },
+    { NM_ITEM,  (STRPTR)"Grep...",          (STRPTR)"G", 0, 0, (APTR)MN_GREP },
+    { NM_ITEM,  (STRPTR)"Swap Panes",       (STRPTR)"S", 0, 0, (APTR)MN_SWAP },
+    { NM_ITEM,  (STRPTR)NM_BARLABEL,        0,           0, 0, (APTR)0 },
+    { NM_ITEM,  (STRPTR)"Select All",       (STRPTR)"A", 0, 0, (APTR)MN_SELALL },
+    { NM_ITEM,  (STRPTR)"Clear Tags",       0,           0, 0, (APTR)MN_CLEARTAGS },
+    { NM_TITLE, (STRPTR)"Settings",         0,           0, 0, (APTR)0 },
+    { NM_ITEM,  (STRPTR)"Start drawers...", 0,           0, 0, (APTR)MN_SET_DRAWERS },
+    { NM_ITEM,  (STRPTR)"Programs...",      0,           0, 0, (APTR)MN_SET_PROGRAMS },
+    { NM_END,   0,                          0,           0, 0, (APTR)0 }
+};
+
+/* ---- Settings pages (amigui frame: Save / Use / Defaults / Cancel) ------
+ * Laid out from Topaz 8, the font AmiFM's gadgets use everywhere, so both
+ * pages fit a 640x200 NTSC screen. */
+
+#define SP_MAX        4
+#define ID_SP_CURRENT 20               /* "Current panes" (Start drawers page) */
+
+struct SetPage {
+    const char *title, *hint;
+    int n;
+    const char *label[SP_MAX];
+    char       *val[SP_MAX];           /* into g_set */
+    int         size[SP_MAX];
+    const char *def[SP_MAX];           /* into a default Settings */
+    BOOL        current;               /* fields 0/1 are the panes' drawers */
+};
+
+static void spGadget(AmgPage *pg, int id, UWORD code, void *ctx)
+{
+    struct SetPage *sp = (struct SetPage *)ctx; int i;
+    (void)code;
+    if (id == AMG_ID_DEFAULTS)
+        for (i = 0; i < sp->n; i++)
+            GT_SetGadgetAttrs(pg->g[i], pg->win, NULL, GTST_String, (ULONG)sp->def[i], TAG_END);
+    else if (id == ID_SP_CURRENT && sp->current)
+        for (i = 0; i < 2; i++)
+            GT_SetGadgetAttrs(pg->g[i], pg->win, NULL, GTST_String, (ULONG)panes[i].path, TAG_END);
+}
+
+static void runSetPage(struct SetPage *sp)
+{
+    AmgPage pg; struct NewGadget ng; struct Gadget *gad;
+    int i, lw = 0, w, h, bh, rowh, y, r = AMG_CANCEL;
+    {   /* measure the labels in Topaz 8 before the window opens */
+        struct TextFont *f = OpenFont(&topaz8); struct RastPort rp;
+        if (!f) return;
+        InitRastPort(&rp); SetFont(&rp, f);
+        for (i = 0; i < sp->n; i++) {
+            int l = TextLength(&rp, (STRPTR)sp->label[i], strlen(sp->label[i]));
+            if (l > lw) lw = l;
+        }
+        bh = f->tf_YSize + 6;
+        CloseFont(f);
+    }
+    lw += 8; rowh = bh + 4;
+    w = 2 * 8 + lw + 340;
+    if (w < amg_min_width(&topaz8)) w = amg_min_width(&topaz8);
+    if (w > scr->Width - 24) w = scr->Width - 24;
+    h = 4 + sp->n * rowh + rowh + (sp->current ? rowh : 0) + 6 + bh + 4;
+    if (!amg_page_open(&pg, scr, vi, &topaz8, win, sp->title, w, h)) return;
+    gad = CreateContext(&pg.glist);
+    memset(&ng, 0, sizeof ng);
+    ng.ng_VisualInfo = vi; ng.ng_TextAttr = &topaz8;
+    ng.ng_LeftEdge = pg.win->BorderLeft + 8 + lw; ng.ng_Width = w - 2 * 8 - lw;
+    ng.ng_Height = bh; ng.ng_Flags = PLACETEXT_LEFT;
+    y = 4;
+    for (i = 0; i < sp->n; i++) {
+        ng.ng_TopEdge = pg.win->BorderTop + y; y += rowh;
+        ng.ng_GadgetText = (STRPTR)sp->label[i]; ng.ng_GadgetID = 1 + i;
+        pg.g[i] = gad = CreateGadget(STRING_KIND, gad, &ng, GTST_String, (ULONG)sp->val[i],
+                                     GTST_MaxChars, sp->size[i] - 1, TAG_END);
+    }
+    ng.ng_LeftEdge = pg.win->BorderLeft + 8; ng.ng_Width = w - 2 * 8;   /* the hint line */
+    ng.ng_TopEdge = pg.win->BorderTop + y; y += rowh;
+    ng.ng_GadgetText = NULL; ng.ng_GadgetID = 0;
+    gad = CreateGadget(TEXT_KIND, gad, &ng, GTTX_Text, (ULONG)sp->hint, GTTX_Clipped, TRUE, TAG_END);
+    if (sp->current) {
+        ng.ng_TopEdge = pg.win->BorderTop + y; y += rowh;
+        ng.ng_Width = amg_tlen(&pg, "Current panes") + 24; ng.ng_Flags = PLACETEXT_IN;
+        ng.ng_GadgetText = (STRPTR)"Current panes"; ng.ng_GadgetID = ID_SP_CURRENT;
+        gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_END);
+    }
+    gad = amg_buttons(&pg, gad, y + 6, w, 1);
+    if (gad) {
+        amg_page_show(&pg);
+        r = amg_page_run(&pg, spGadget, sp);
+        if (r != AMG_CANCEL)
+            for (i = 0; i < sp->n; i++) {
+                const char *s = amg_string(pg.g[i]);
+                if (!*s && sp->def[i][0]) s = sp->def[i];    /* empty = the default (Edit: ENV:EDITOR) */
+                setStr(sp->val[i], sp->size[i], s);
+            }
+    }
+    amg_page_close(&pg);
+    if (r != AMG_CANCEL && !setsWrite(&g_set, r == AMG_SAVE))
+        info(r == AMG_SAVE ? "Could not write ENV:AmiFM.prefs / ENVARC:AmiFM.prefs."
+                           : "Could not write ENV:AmiFM.prefs.");
+}
+
+static void settingsPage(int which)
+{
+    static struct Settings def;
+    struct SetPage sp;
+    setsDefault(&def);
+    memset(&sp, 0, sizeof sp);
+    if (which == MN_SET_DRAWERS) {
+        sp.title = "AmiFM: Start drawers"; sp.hint = "Used the next time AmiFM starts.";
+        sp.n = 2; sp.current = TRUE;
+        sp.label[0] = "Left pane";  sp.val[0] = g_set.left;  sp.size[0] = sizeof g_set.left;  sp.def[0] = def.left;
+        sp.label[1] = "Right pane"; sp.val[1] = g_set.right; sp.size[1] = sizeof g_set.right; sp.def[1] = def.right;
+    } else {
+        sp.title = "AmiFM: Programs"; sp.hint = "Edit empty = ENV:EDITOR, else SYS:Tools/TextEdit.";
+        sp.n = 4;
+        sp.label[0] = "View";    sp.val[0] = g_set.view;    sp.size[0] = sizeof g_set.view;    sp.def[0] = def.view;
+        sp.label[1] = "Edit";    sp.val[1] = g_set.edit;    sp.size[1] = sizeof g_set.edit;    sp.def[1] = def.edit;
+        sp.label[2] = "Extract"; sp.val[2] = g_set.extract; sp.size[2] = sizeof g_set.extract; sp.def[2] = def.extract;
+        sp.label[3] = "Pack";    sp.val[3] = g_set.pack;    sp.size[3] = sizeof g_set.pack;    sp.def[3] = def.pack;
+    }
+    searchBegin();                     /* busy main window; clicks made meanwhile are dropped */
+    runSetPage(&sp);
+    searchEnd();
+}
 
 static void buildMenu(void)
 {
@@ -1521,6 +1731,39 @@ static void iconify(void)
         info("AmiFM: could not reopen its window.");
 }
 
+/* one menu pick (by its MN_* user data); TRUE = quit */
+static BOOL doMenu(ULONG id)
+{
+    switch (id) {
+        case MN_RELOAD:    opReload(); break;
+        case MN_ICONIFY:   iconify(); return FALSE;      /* the window may be gone */
+        case MN_ABOUT:     amg_about(win, "AmiFM", AMIFM_VERSION,
+                               "A two-pane file manager for AmigaOS 3.x.\n" AMIFM_LICENCE); break;
+        case MN_QUIT:      return TRUE;
+        case MN_VIEW:      opView(); break;
+        case MN_EDIT:      opEdit(); break;
+        case MN_COPY:      opCopy(); break;
+        case MN_MOVE:      opMove(); break;
+        case MN_RENAME:    opRename(); break;
+        case MN_DELETE:    opDelete(); break;
+        case MN_ADDICON:   opAddIcon(); break;
+        case MN_EXTRACT:   opExtract(); break;
+        case MN_PACK:      opPack(); break;
+        case MN_PARENT:    opParent(); break;
+        case MN_MAKEDIR:   opMakeDir(); break;
+        case MN_FIND:      opFind(); break;
+        case MN_GREP:      opGrep(); break;
+        case MN_SWAP:      opSwap(); break;
+        case MN_SELALL:    opSelectAll(); break;
+        case MN_CLEARTAGS: opClearTags(); break;
+        case MN_SET_DRAWERS:
+        case MN_SET_PROGRAMS: settingsPage((int)id); break;
+        default: return FALSE;
+    }
+    if (win) showSel(active());        /* ops may have cleared the selection */
+    return FALSE;
+}
+
 int main(void)
 {
     BOOL done = FALSE;
@@ -1546,8 +1789,19 @@ int main(void)
     pSHADOW = dri->dri_Pens[SHADOWPEN]; pSHINE = dri->dri_Pens[SHINEPEN];
     g_cw = font->tf_XSize; g_rowH = font->tf_YSize + 1; g_base = font->tf_Baseline + 1;
 
-    strcpy(panes[0].path, "SYS:");
-    strcpy(panes[1].path, "RAM:");
+    /* start drawers: the settings (AmiFM.prefs over the defaults); one that
+     * can't be locked now (volume not mounted, drawer gone) falls back */
+    setsLoad(&g_set);
+    for (px = 0; px < 2; px++) {
+        const char *want = px ? g_set.right : g_set.left;
+        struct Process *pr = (struct Process *)FindTask(NULL);
+        APTR oldwp = pr->pr_WindowPtr; BPTR lk;
+        pr->pr_WindowPtr = (APTR)-1L;              /* no "insert volume" requester */
+        lk = Lock((STRPTR)want, ACCESS_READ);
+        pr->pr_WindowPtr = oldwp;
+        if (lk) UnLock(lk); else want = px ? "RAM:" : "SYS:";
+        setStr(panes[px].path, sizeof panes[px].path, want);
+    }
     panes[0].lastrow = panes[1].lastrow = -1;
     scanPane(&panes[0]); scanPane(&panes[1]);
 
@@ -1570,22 +1824,14 @@ int main(void)
                 done = TRUE;
             } else if (cls == IDCMP_MENUPICK) {
                 UWORD mnum = code;
-                while (mnum != MENUNULL) {
+                while (mnum != MENUNULL && !done) {
                     struct MenuItem *mi = ItemAddress(g_menu, mnum);
-                    UWORD mn = MENUNUM(mnum), in = ITEMNUM(mnum);
-                    if (mn == 0) {                       /* AmiFM */
-                        if (in == 0) opReload(); else if (in == 1) iconify(); else if (in == 3) done = TRUE;
-                    } else if (mn == 1) {                /* Selection */
-                        switch (in) { case 0: opView(); break; case 1: opEdit(); break;
-                            case 2: opExtract(); break; case 3: opPack(); break;
-                            case 5: opRename(); break; case 6: opDelete(); break; }
-                    } else if (mn == 2) {                /* Pane */
-                        switch (in) { case 0: opParent(); break; case 1: opMakeDir(); break;
-                            case 2: opFind(); break; case 3: opGrep(); break; case 4: opSwap(); break;
-                            case 6: opSelectAll(); break; case 7: opClearTags(); break; }
-                    }
-                    mnum = mi ? mi->NextSelect : MENUNULL;
+                    if (!mi) break;
+                    if (doMenu((ULONG)GTMENUITEM_USERDATA(mi))) done = TRUE;
+                    if (!win) break;                     /* iconify couldn't reopen the window */
+                    mnum = mi->NextSelect;
                 }
+                if (!win) break;                         /* don't read a closed window's port */
             } else if (cls == IDCMP_REFRESHWINDOW) {
                 BeginRefresh(win); drawCustom(); EndRefresh(win, TRUE);
             } else if (cls == IDCMP_NEWSIZE) {

@@ -38,7 +38,10 @@ proven, already-installed Amiga tools — see **[Dependencies](#dependencies)**.
   which files (a `#?` pattern), match case. Results list as `file:line: text`; click one to jump to the file.
   Both stop at 1000 results.
 - **Custom scrollbars**, window resize with full reflow, right-button **menu**
-  (AmiFM / Selection / Pane) including **Iconify** to a Workbench AppIcon.
+  (AmiFM / Selection / Pane / Settings) with Amiga-key shortcuts, including **Iconify**
+  to a Workbench AppIcon - see [Menus and settings](#menus-and-settings).
+- **Settings** - start drawers and the View/Edit/Extract/Pack programs, with
+  Save / Use / Defaults / Cancel like the system's prefs editors.
 - **Colour GlowIcon** — ships with a hand-built OS 3.5/3.2 colour icon
   (`AmiFM.info`) with a gold glow-on-select, matching the GlowIcons look.
 
@@ -58,6 +61,53 @@ without its `e` (executable) flag and won't start until you set it:
 The package is an `AmiFM` drawer holding `AmiFM`, its icon `AmiFM.info` and this
 README, with the drawer's own icon (`drawer.info` in this repository) beside it as
 `AmiFM.info`.
+
+## Menus and settings
+
+Hold the **right mouse button** over the AmiFM window for the menu bar. The Amiga-key
+shortcuts are the right Amiga key plus the letter.
+
+| Menu | Item | Key | Does |
+|------|------|-----|------|
+| AmiFM | Reload | R | re-read the active pane |
+| | Iconify | I | close to a Workbench AppIcon (double-click it to come back) |
+| | About... | ? | name, version, licence |
+| | Quit | Q | |
+| Selection | View / Edit | V / E | the selected file, in the View / Edit program |
+| | Copy / Move | C / M | tagged items (or the selected one) to the other pane |
+| | Rename / Delete | N / D | |
+| | Add Icon | | give the selected drawer the default drawer icon |
+| | Extract / Pack | X / K | archives into the other pane / the selection into an `.lha` |
+| Pane | Parent | P | |
+| | Make Drawer... | | |
+| | Find... / Grep... | F / G | |
+| | Swap Panes | S | |
+| | Select All / Clear Tags | A / - | |
+| Settings | Start drawers... | | the drawers the two panes open on |
+| | Programs... | | what View, Edit, Extract and Pack run |
+
+Each Settings item opens a small page with **Save** (kept: `ENV:` and `ENVARC:`),
+**Use** (until the next reboot: `ENV:` only), **Defaults** (fills in the built-in values;
+nothing changes until Save or Use) and **Cancel**. The pages fit a 640x200 screen.
+
+- **Start drawers** - *Left pane* (default `SYS:`) and *Right pane* (default `RAM:`).
+  **Current panes** fills in what the panes show now. Used the next time AmiFM starts;
+  a drawer that isn't there then (volume not mounted) falls back to the default.
+- **Programs** - the program each action runs; its arguments stay the same:
+  - *View* (default `SYS:Utilities/MultiView`): `<View> "<file>"`
+  - *Edit* (default empty): `<Edit> "<file>"`. Empty means `ENV:EDITOR` if that is set,
+    else `SYS:Tools/TextEdit` - as before the setting existed.
+  - *Extract* (default `xadUnFile`): `<Extract> "<archive>" DEST "<drawer>" OVERWRITE`
+  - *Pack* (default `lha`): `<Pack> a "<name>.lha" "<item>"`
+
+  A path with spaces needs quotes around it in the field. An emptied View, Extract or Pack
+  field goes back to its default.
+
+**The settings file** is `ENV:AmiFM.prefs` (Save also writes `ENVARC:AmiFM.prefs`), plain
+text, one `KEY=value` a line: `LEFT`, `RIGHT`, `VIEW`, `EDIT`, `EXTRACT`, `PACK`.
+**Precedence**, lowest first: the built-in defaults, then `ENV:EDITOR` (Edit only, while
+the Edit setting is empty), then the settings file (`ENV:`, else `ENVARC:`). AmiFM reads no
+tooltypes, so there are none for the file to override.
 
 ## Dependencies
 
@@ -85,7 +135,7 @@ Iconify and Add Icon are disabled but nothing else changes.
 | Action | Button | Needs | Where it ships / how to get it |
 |--------|--------|-------|--------------------------------|
 | **View** (text & images) | `View` | `SYS:Utilities/MultiView` + `datatypes.library` | MultiView ships with Workbench 3.x. Text + IFF ILBM work out of the box. **PNG/JPEG/GIF** etc. need the matching **datatypes** installed (Aminet `util/dtype/`). |
-| **Edit** (text) | `Edit` | `SYS:Tools/TextEdit` | Ships with OS 3.2. Override the editor with the `ENV:EDITOR` variable (e.g. `setenv EDITOR CygnusEd`). |
+| **Edit** (text) | `Edit` | `SYS:Tools/TextEdit` | Ships with OS 3.2. Override the editor in **Settings > Programs**, or with the `ENV:EDITOR` variable (e.g. `setenv EDITOR CygnusEd`). |
 | **Extract** (archives) | `Extract` | `xadmaster.library` + `xadUnFile` command + client modules + `xadmaster.key` | From Aminet `util/arc/xadmaster*.lha`. Handles lha, lzx, lzh, zip, zoo, tar, gz, dms and more. **Install:** library → `LIBS:`, client modules → `LIBS:xad/`, `xadUnFile` → `C:`, and the free **`xadmaster.key`** → `S:` (without the key xadmaster shows an "unregistered" nag). |
 | **Pack** (to LHA) | `Pack` | `lha` command on your path | From Aminet `util/arc/lha*.lha`, put `lha` in `C:`. AmiFM runs `lha a name.lha <item>`. LhA is the Amiga packing standard; xadmaster is unpack-only, so packing uses LhA directly. |
 | **Add Icon** | `AddIcon` | `icon.library` 37 + a default drawer icon | Uses `GetDefDiskObject(WBDRAWER)` (i.e. `ENVARC:Sys/def_drawer.info`, shipped with Workbench). Falls back to a built-in folder icon if no system default exists. |
@@ -142,6 +192,7 @@ make icon       # runs tools/mkglow.py -> AmiFM.info
 ```
 AmiFM/
 ├── AmiFM.c          the program
+├── amigui.c/.h      About box + settings-page frame, shared with our other GUI tools
 ├── engine/          AmiFind's and AmiGrep's search engines, copied unchanged (see engine/README.md)
 ├── AmiFM.info       colour GlowIcon (generated by tools/mkglow.py)
 ├── drawer.info      the package drawer's icon (ships beside the drawer as AmiFM.info)

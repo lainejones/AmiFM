@@ -24,9 +24,10 @@ CFLAGS  ?= -Os -noixemul -fomit-frame-pointer -Wall -Wno-pointer-sign -s
 WORK    ?= /mnt/c/Amiga/workspace
 
 # engine/: AmiFind's and AmiGrep's search engines (Find and Grep), see engine/README.md
-SRCS    = AmiFM.c engine/finder.c engine/grepeng.c
+# amigui.c/.h: the shared About box + settings-page frame (copy of C:\projects\tools\amigui)
+SRCS    = AmiFM.c amigui.c engine/finder.c engine/grepeng.c
 
-AmiFM: $(SRCS) engine/finder.h engine/grep.h engine/grep.c engine/grepeng.h
+AmiFM: $(SRCS) amigui.h engine/finder.h engine/grep.h engine/grep.c engine/grepeng.h
 	$(CC) $(CFLAGS) -Iengine -o $@ $(SRCS)
 
 deploy: AmiFM
