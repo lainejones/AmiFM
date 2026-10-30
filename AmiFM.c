@@ -157,7 +157,9 @@ static void fmt(char *out, int outsz, const char *f, ...)
  *   3. the settings file AmiFM.prefs: ENV:AmiFM.prefs, else ENVARC:AmiFM.prefs
  *      (Settings > ... > Save writes both, Use writes ENV: only, so a Use
  *      lasts until the next reboot). It is plain text, one KEY=value a line:
- *      LEFT, RIGHT (the start drawers), VIEW, EDIT, EXTRACT, PACK (the programs).
+ *      LEFT, RIGHT (the start drawers), VIEW, EDIT, EXTRACT, PACK (the programs),
+ *      WINDOW=x,y,w,h (the main window's place and size, Settings > Snapshot
+ *      window; none = a window that fits one 800-wide monitor).
  * AmiFM reads no tooltypes, so there are none for the file to override. */
 
 #define PREFS_NAME "AmiFM.prefs"
@@ -168,6 +170,7 @@ struct Settings {
     char edit[120];                    /* Edit:    <edit> "<file>"; empty = ENV:EDITOR, else TextEdit */
     char extract[120];                 /* Extract: <extract> "<archive>" DEST "<drawer>" OVERWRITE */
     char pack[120];                    /* Pack:    <pack> a "<name>.lha" "<item>" */
+    long winx, winy, winw, winh;       /* the main window, snapshot; winw 0 = none */
 };
 static struct Settings g_set;
 
@@ -204,6 +207,16 @@ static void setsLoad(struct Settings *s)
         else if (!strcmp(line, "EDIT"))    setStr(s->edit, sizeof s->edit, v);   /* empty = ENV:EDITOR */
         else if (!strcmp(line, "EXTRACT")) { if (*v) setStr(s->extract, sizeof s->extract, v); }
         else if (!strcmp(line, "PACK"))    { if (*v) setStr(s->pack, sizeof s->pack, v); }
+        else if (!strcmp(line, "WINDOW")) {
+            long n[4]; int k;
+            for (k = 0; k < 4 && *v; k++) {
+                n[k] = strtol(v, &v, 10);
+                if (*v == ',') v++;
+            }
+            if (k == 4 && n[2] > 0 && n[3] > 0) {
+                s->winx = n[0]; s->winy = n[1]; s->winw = n[2]; s->winh = n[3];
+            }
+        }
     }
 }
 
@@ -218,6 +231,10 @@ static BOOL setsWrite(const struct Settings *s, BOOL keep)
     fmt(ln, sizeof ln, "EDIT=%s\n", s->edit);       strcat(buf, ln);
     fmt(ln, sizeof ln, "EXTRACT=%s\n", s->extract); strcat(buf, ln);
     fmt(ln, sizeof ln, "PACK=%s\n", s->pack);       strcat(buf, ln);
+    if (s->winw > 0) {
+        fmt(ln, sizeof ln, "WINDOW=%d,%d,%d,%d\n", s->winx, s->winy, s->winw, s->winh);
+        strcat(buf, ln);
+    }
     return amg_env_write(PREFS_NAME, buf, strlen(buf), keep) ? TRUE : FALSE;
 }
 
@@ -1496,7 +1513,7 @@ enum {
     MN_VIEW, MN_EDIT, MN_COPY, MN_MOVE, MN_RENAME, MN_DELETE, MN_ADDICON,       /* Selection */
     MN_EXTRACT, MN_PACK,
     MN_PARENT, MN_MAKEDIR, MN_FIND, MN_GREP, MN_SWAP, MN_SELALL, MN_CLEARTAGS,  /* Pane */
-    MN_SET_DRAWERS, MN_SET_PROGRAMS                                             /* Settings */
+    MN_SET_DRAWERS, MN_SET_PROGRAMS, MN_SNAPSHOT, MN_UNSNAPSHOT                  /* Settings */
 };
 
 static struct NewMenu g_newmenu[] = {
@@ -1531,6 +1548,9 @@ static struct NewMenu g_newmenu[] = {
     { NM_TITLE, (STRPTR)"Settings",         0,           0, 0, (APTR)0 },
     { NM_ITEM,  (STRPTR)"Start drawers...", 0,           0, 0, (APTR)MN_SET_DRAWERS },
     { NM_ITEM,  (STRPTR)"Programs...",      0,           0, 0, (APTR)MN_SET_PROGRAMS },
+    { NM_ITEM,  (STRPTR)NM_BARLABEL,        0,           0, 0, (APTR)0 },
+    { NM_ITEM,  (STRPTR)"Snapshot window",  0,           0, 0, (APTR)MN_SNAPSHOT },
+    { NM_ITEM,  (STRPTR)"Unsnapshot window", 0,          0, 0, (APTR)MN_UNSNAPSHOT },
     { NM_END,   0,                          0,           0, 0, (APTR)0 }
 };
 
@@ -1661,10 +1681,26 @@ static void iconify(void);   /* fwd */
 
 static BOOL openMainWin(void)
 {
+    /* the snapshot place and size (Settings > Snapshot window), kept on the
+     * screen; else a window that fits one monitor: a wide RTG Workbench
+     * (1600x600 over two monitors) used to get a window across both */
+    LONG x = 30, y = scr->BarHeight + 6, w = scr->Width - 90, h = scr->Height - scr->BarHeight - 56;
+    if (w > 720) w = 720;
+    if (g_set.winw > 0) {
+        x = g_set.winx; y = g_set.winy; w = g_set.winw; h = g_set.winh;
+        if (w > scr->Width) w = scr->Width;
+        if (h > scr->Height) h = scr->Height;
+        if (x + w > scr->Width) x = scr->Width - w;
+        if (y + h > scr->Height) y = scr->Height - h;
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+    }
+    if (w < 340) w = 340;
+    if (h < 130) h = 130;
     win = OpenWindowTags(NULL,
-        WA_Left, 30, WA_Top, (ULONG)(scr->BarHeight + 6),
-        WA_Width,  (ULONG)(scr->Width  - 90),
-        WA_Height, (ULONG)(scr->Height - scr->BarHeight - 56),
+        WA_Left, (ULONG)x, WA_Top, (ULONG)y,
+        WA_Width,  (ULONG)w,
+        WA_Height, (ULONG)h,
         WA_MinWidth, 340, WA_MinHeight, 130,
         WA_MaxWidth, (ULONG)scr->Width, WA_MaxHeight, (ULONG)scr->Height,
         WA_Title, (ULONG)"AmiFM",
@@ -1758,6 +1794,17 @@ static BOOL doMenu(ULONG id)
         case MN_CLEARTAGS: opClearTags(); break;
         case MN_SET_DRAWERS:
         case MN_SET_PROGRAMS: settingsPage((int)id); break;
+        case MN_SNAPSHOT:     /* the window's place and size from now on (saved, like Save) */
+            g_set.winx = win->LeftEdge; g_set.winy = win->TopEdge;
+            g_set.winw = win->Width;    g_set.winh = win->Height;
+            info(setsWrite(&g_set, TRUE) ? "Window place and size saved."
+                                          : "Could not write ENV:AmiFM.prefs / ENVARC:AmiFM.prefs.");
+            break;
+        case MN_UNSNAPSHOT:   /* back to the default place and size at the next start */
+            g_set.winw = 0;
+            info(setsWrite(&g_set, TRUE) ? "The window opens at its default place and size again."
+                                          : "Could not write ENV:AmiFM.prefs / ENVARC:AmiFM.prefs.");
+            break;
         default: return FALSE;
     }
     if (win) showSel(active());        /* ops may have cleared the selection */

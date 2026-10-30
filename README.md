@@ -85,6 +85,8 @@ shortcuts are the right Amiga key plus the letter.
 | | Select All / Clear Tags | A / - | |
 | Settings | Start drawers... | | the drawers the two panes open on |
 | | Programs... | | what View, Edit, Extract and Pack run |
+| | Snapshot window | | AmiFM opens where the window is now, at this size (saved in `AmiFM.prefs`) |
+| | Unsnapshot window | | back to the default: a window that fits one monitor |
 
 Each Settings item opens a small page with **Save** (kept: `ENV:` and `ENVARC:`),
 **Use** (until the next reboot: `ENV:` only), **Defaults** (fills in the built-in values;
