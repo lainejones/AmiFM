@@ -39,13 +39,13 @@
 #include "grepeng.h"    /* AmiGrep's, renamed (engine/) - Grep */
 #include "amigui.h"     /* shared About box, settings page frame, ENV:/ENVARC: writing */
 
-#define AMIFM_VERSION "1.2"
+#define AMIFM_VERSION "1.2.1"
 /* what About says about the licence - AmiFM has no licence file yet */
 #define AMIFM_LICENCE "Licence: GPL-3.0"
 
 /* AmigaDOS version cookie (the C: Version command / $VER reads this) */
 static const char verstag[] __attribute__((used)) =
-    "$VER: AmiFM " AMIFM_VERSION " (14.10.2026)";
+    "$VER: AmiFM " AMIFM_VERSION " (30.10.2026)";
 
 struct IntuitionBase *IntuitionBase = NULL;
 struct GfxBase       *GfxBase       = NULL;
@@ -1794,16 +1794,21 @@ static BOOL doMenu(ULONG id)
         case MN_CLEARTAGS: opClearTags(); break;
         case MN_SET_DRAWERS:
         case MN_SET_PROGRAMS: settingsPage((int)id); break;
-        case MN_SNAPSHOT:     /* the window's place and size from now on (saved, like Save) */
+        case MN_SNAPSHOT: {   /* the window's place and size from now on: only the WINDOW
+                               * line is saved, settings that were only Used stay so */
+            char v[48];
             g_set.winx = win->LeftEdge; g_set.winy = win->TopEdge;
             g_set.winw = win->Width;    g_set.winh = win->Height;
-            info(setsWrite(&g_set, TRUE) ? "Window place and size saved."
-                                          : "Could not write ENV:AmiFM.prefs / ENVARC:AmiFM.prefs.");
+            fmt(v, sizeof v, "%d,%d,%d,%d", g_set.winx, g_set.winy, g_set.winw, g_set.winh);
+            info(amg_env_setkey(PREFS_NAME, "WINDOW", v) ? "Window place and size saved."
+                 : "Could not write ENV:AmiFM.prefs / ENVARC:AmiFM.prefs.");
             break;
+        }
         case MN_UNSNAPSHOT:   /* back to the default place and size at the next start */
             g_set.winw = 0;
-            info(setsWrite(&g_set, TRUE) ? "The window opens at its default place and size again."
-                                          : "Could not write ENV:AmiFM.prefs / ENVARC:AmiFM.prefs.");
+            info(amg_env_setkey(PREFS_NAME, "WINDOW", NULL)
+                 ? "The window opens at its default place and size again."
+                 : "Could not write ENV:AmiFM.prefs / ENVARC:AmiFM.prefs.");
             break;
         default: return FALSE;
     }
