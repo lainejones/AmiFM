@@ -40,7 +40,7 @@
 #include "amigui.h"     /* shared About box, settings page frame, ENV:/ENVARC: writing */
 
 #define AMIFM_VERSION "1.2.1"
-/* what About says about the licence - AmiFM has no licence file yet */
+/* what About says about the licence (the LICENSE file: GPL-3.0) */
 #define AMIFM_LICENCE "Licence: GPL-3.0"
 
 /* AmigaDOS version cookie (the C: Version command / $VER reads this) */

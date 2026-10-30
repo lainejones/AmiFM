@@ -10,3 +10,8 @@ tools/*_grid.txt
 *~
 Thumbs.db
 .DS_Store
+
+# release staging (dist/<Name>-<ver>/) and archives; dist/notes-*.md is tracked
+dist/*/
+dist/*.zip
+dist/*.lha
