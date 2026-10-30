@@ -41,7 +41,7 @@
 
 #define AMIFM_VERSION "1.2"
 /* what About says about the licence - AmiFM has no licence file yet */
-#define AMIFM_LICENCE "Licence: not chosen yet (see the README)."
+#define AMIFM_LICENCE "Licence: GPL-3.0"
 
 /* AmigaDOS version cookie (the C: Version command / $VER reads this) */
 static const char verstag[] __attribute__((used)) =
