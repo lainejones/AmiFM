@@ -39,7 +39,7 @@
 #include "grepeng.h"    /* AmiGrep's, renamed (engine/) - Grep */
 #include "amigui.h"     /* shared About box, settings page frame, ENV:/ENVARC: writing */
 
-#define AMIFM_VERSION "1.2.1"
+#define AMIFM_VERSION "1.2.2"
 /* what About says about the licence (the LICENSE file: GPL-3.0) */
 #define AMIFM_LICENCE "Licence: GPL-3.0"
 

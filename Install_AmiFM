@@ -1,0 +1,53 @@
+; -------------------------------------------------------------------------
+; AmiFM - Installer script
+; Copies AmiFM, its icon, the README and the licence into a drawer of your
+; choice. Run it again to update; your settings (ENVARC:AmiFM.prefs) are
+; kept.
+; -------------------------------------------------------------------------
+(set @app-name "AmiFM")
+(complete 0)
+
+(if (not (exists "AmiFM"))
+    (abort "Can't find the AmiFM files next to this script.\n\n"
+           "Run the installer from the drawer it came in."))
+
+(message "AmiFM 1.2.2 - a two-pane file manager\n\n"
+         "AmiFM shows two drawers side by side and copies, moves, renames and "
+         "deletes between them. It can also view, edit, search and unpack files "
+         "with the programs you already have.")
+
+(set target
+    (askdir (prompt "Where should the AmiFM drawer go?")
+            (help "A drawer called AmiFM is made here (or updated, if it is "
+                  "already there). It holds the program, the README and the licence.")
+            (default (if (exists "SYS:Tools" (noreq)) "SYS:Tools" "SYS:"))))
+(set target (tackon target "AmiFM"))
+(complete 20)
+
+; the drawer gets this Workbench's own drawer icon (ENV:Sys/def_drawer.info)
+(if (not (exists target (noreq))) (makedir target (infos)))
+
+(copyfiles (prompt "Copying AmiFM")
+           (help @copyfiles-help)
+           (source "AmiFM")
+           (dest target)
+           (infos))
+(run (cat "Protect >NIL: \"" (tackon target "AmiFM") "\" +rwed"))
+(copyfiles (source "README.md") (dest target) (nogauge))
+(copyfiles (source "LICENSE") (dest target) (nogauge))
+(complete 90)
+
+; the package drawer came with a plain drawer icon so it shows when unpacked;
+; from now on it has this Workbench's own (ENV:Sys/def_drawer.info). Not at a
+; disk root: a disk root has no drawer icon, and it may be locked.
+(set pkgdir (expandpath ""))
+(if (and (exists "ENV:Sys/def_drawer.info" (noreq))
+         (<> (substr pkgdir (- (strlen pkgdir) 1) 1) ":"))
+    (if (exists (cat pkgdir ".info") (noreq))
+        (run (cat "Copy >NIL: ENV:Sys/def_drawer.info \"" pkgdir ".info\""))))
+(complete 100)
+
+(message "AmiFM 1.2.2 is installed in " target ".\n\n"
+         "Double-click its icon to start it. View, Edit, Extract and Pack use other "
+         "programs; the README says which, and Settings > Programs can change them.")
+(exit (quiet))
